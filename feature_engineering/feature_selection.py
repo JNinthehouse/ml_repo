@@ -176,3 +176,62 @@ class CategorySelector(BaseEstimator, TransformerMixin):
         self.unique_values = None
         self.category_cols = None
         gc.collect()
+
+
+class FeatureForwardSelector(BaseEstimator, TransformerMixin):
+    def __init__(self,
+                 task='classification',
+                 metric='auto',
+                 feature_importances_type='default',
+                 steps=1,
+                 start=5):
+        """
+        :param task: str, default='classification'
+        :param metric: str, 'accuracy', 'roc_auc', 'roc_auc_ovr', 'roc_auc_ovo', 'roc_auc_weighted',
+                'roc_auc_ovo_weighted', 'roc_auc_ovr_weighted', 'f1', 'micro_f1', 'macro_f1',
+                'log_loss', 'mae', 'mse', 'r2', 'mape'. Default is 'auto'.
+        :param feature_importances_type: str, default='default','null','permutation','shap'
+        """
+        self.task = task
+        self.metric = metric
+        self.feature_importances_type = feature_importances_type
+        self.steps = steps
+        self.start = start
+        self.__cache = None
+        self.__feature_importances = None
+        self.initial_params = None
+        self.fit_params = None
+
+    def init_setting(self, **kwargs):
+        self.initial_params = {
+            'task': self.task,
+            'n_jobs': -1,
+            'estimator_list': ['rf'],
+            'eval_method': 'cv',
+            'n_splits': 5,
+            'split_type': 'stratified' if self.task == 'classification' else 'uniform',
+            'metric': self.metric,
+            'max_iter': 1000,
+            'time_budget': 3600,
+        }
+        for key, value in kwargs.items():
+            self.initial_params[key] = value
+
+    def init_fit(self, **kwargs):
+        self.fit_params = {
+            'early_stop': False
+        }
+        for key, value in kwargs.items():
+            self.fit_params[key] = value
+
+    def fit(self, X, y):
+        import flaml
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+        if self.initial_params is None:
+            self.init_setting()
+        if self.fit_params is None:
+            self.init_fit()
+        model = flaml.AutoML(**self.initial_params)
+        model.fit(X=X, y=y, **self.fit_params)
+        config = model.best_config_per_estimator

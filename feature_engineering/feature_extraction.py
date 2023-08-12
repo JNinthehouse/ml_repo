@@ -164,7 +164,7 @@ class OrdinaryEncoder(BaseEstimator, TransformerMixin):
         # handle_unknown: 'error', 'value'
         from sklearn.preprocessing import OrdinalEncoder as oe
         self.cols = cols
-        self.handle_unknown = 'used_encoded_value' if handle_unknown == 'value' else 'error'
+        self.handle_unknown = 'use_encoded_value' if handle_unknown == 'value' else 'error'
         self.unknown_value = unknown_value
         self.missing_value = handle_missing
         self.min_frequency = min_frequency
@@ -321,6 +321,7 @@ class OneHotEncoder(BaseEstimator, TransformerMixin):
         cur_cols = data.columns.tolist()
         res_cols = list(set(cur_cols) - set(self.cols))
         data_encoded = self._ohe.transform(data[self.cols])
+        self.transformed_cols = data_encoded.columns.tolist()
         if len(res_cols) > 0:
             data_encoded = pd.concat([data[res_cols], data_encoded], axis=1)
         return (data_encoded, y) if y is not None else data_encoded
@@ -329,8 +330,18 @@ class OneHotEncoder(BaseEstimator, TransformerMixin):
         self.fit(X, y)
         return self.transform(X, y)
 
+    def inverse_transform(self, X, y=None):
+        data = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        cur_cols = data.columns.tolist()
+        res_cols = list(set(cur_cols) - set(self.transformed_cols))
+        data_encoded = self._ohe.inverse_transform(data[self.transformed_cols])
+        if len(res_cols) > 0:
+            data_encoded = pd.concat([data[res_cols], data_encoded], axis=1)
+        return (data_encoded, y) if y is not None else data_encoded
+
     def clear(self):
         self.__cache = None
         self._mapping = None
         self.cols = None
+        self.transformed_cols = None
         gc.collect()

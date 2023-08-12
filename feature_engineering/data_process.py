@@ -13,9 +13,9 @@ class DetectOutlier(BaseEstimator, TransformerMixin):
         self.kwargs = kwargs
 
     def fit(self, X, y=None):
-        data = pd.concat([X.copy(), y.copy()], axis=1) if y is not None else X.copy()
+        data = X.copy()
         data = data.to_frame() if isinstance(data, pd.Series) else data
-        cols = self.cols if self.cols else list(data.columns)
+        cols = self.cols if self.cols is not None else data.columns
         if self.method == 'iqr':
             self.q1 = data[cols].quantile(0.25).to_frame().T
             self.q3 = data[cols].quantile(0.75).to_frame().T
@@ -36,29 +36,30 @@ class DetectOutlier(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, y=None):
-        data = pd.concat([X.copy(), y.copy()], axis=1) if y is not None else X.copy()
+        data = X.copy()
         data = data.to_frame() if isinstance(data, pd.Series) else data
-        cols_1 = self.cols if self.cols else list(data.columns)
-        if set(cols_1) != set(self.__cache.columns):
+        self.cols = self.cols if self.cols is not None else data.columns
+        if set(self.cols) != set(self.__cache.columns):
             raise ValueError('The columns of X is not equal to the columns of fitted data')
-        cols = self.cols if self.cols else list(data.columns)
 
         # 处理方法生成mask
         if self.method == 'iqr':
-            self.mask = data[cols].values.reshape(-1, len(cols))
+            self.mask = data[self.cols].values.reshape(-1, len(self.cols))
             self.mask = (self.mask < (self.q1.values - 1.5 * self.iqr.values)) | (
                     self.mask > (self.q3.values + 1.5 * self.iqr.values))
-            self.mask = pd.DataFrame(self.mask, columns=cols, index=data.index)
-            self.mask = self.mask.sum(axis=1) >= self.threshold * len(cols)
+            self.mask = pd.DataFrame(self.mask, columns=self.cols, index=data.index)
+            self.mask = self.mask.sum(axis=1) >= self.threshold * len(self.cols)
         if self.method == 'std':
-            self.mask = pd.DataFrame(np.zeros_like(data), columns=cols, index=data.index)
-            for col in cols:
-                self.mask[col] = data[col].apply(lambda x: 0 if abs(x - self.mean[col]) < 3 * self.std[col] else 1)
+            self.mask = pd.DataFrame(np.zeros_like(data), columns=self.cols, index=data.index)
+            for col in self.cols:
+                self.mask[col] = data[col].apply(
+                    lambda x: True if abs(x - self.mean[col]) > 3 * self.std[col] else False)
             self.mask = self.mask.to_frame() if isinstance(self.mask, pd.Series) else self.mask
-            self.mask = self.mask.sum(axis=1) >= self.threshold * len(cols)
+            self.mask = self.mask.sum(axis=1) >= self.threshold * len(self.cols)
         if self.method == 'isoforest':
-            mask = (self.clf.predict(data[cols]) == -1)
+            mask = (self.clf.predict(data[self.cols]) == -1)
             self.mask = pd.Series(mask, index=data.index)
+        self.mask.name = 'is_outlier'
 
         # 处理数据
         if not self.drop:
@@ -124,8 +125,9 @@ class FillNA(BaseEstimator, TransformerMixin):
 
 
 class DropNA(BaseEstimator, TransformerMixin):
-    def __init__(self, threshold_sample=0.5, threshold_feature=0.5):
-        self.threshold_sample = threshold_sample
+    def __init__(self, cols=None, threshold=0.5):
+        self.threshold_sample = threshold
+        self.cols = cols
 
     def fit(self, X, y=None):
         return self
@@ -133,9 +135,9 @@ class DropNA(BaseEstimator, TransformerMixin):
     def transform(self, X, y=None):
         data = pd.concat([X.copy(), y.copy()], axis=1) if y is not None else X.copy()
         data = data.to_frame() if isinstance(data, pd.Series) else data
-        data = data.loc[data.iloc[:, -1].notnull(), :]
+        data = data.loc[data.iloc[:, -1].notnull()] if y is not None else data  # 去除y缺失的行
         self.threshold_sample = 1 - self.threshold_sample if self.threshold_sample else 1
-        data = data.dropna(axis=0, thresh=self.threshold_sample * data.shape[1])
+        data = data.dropna(axis=0, thresh=self.threshold_sample * data.shape[1], subset=self.cols)
         if y is not None:
             return data.iloc[:, :-1], data.iloc[:, -1]
         else:
@@ -160,7 +162,7 @@ class DropDuplicates(BaseEstimator, TransformerMixin):
     def transform(self, X, y=None):
         data = pd.concat([X.copy(), y.copy()], axis=1) if y is not None else X.copy()
         data = data.to_frame() if isinstance(data, pd.Series) else data
-        data = data.drop_duplicates() if not self.cols else data.drop_duplicates(subset=self.cols)
+        data = data.drop_duplicates() if self.cols is not None else data.drop_duplicates(subset=self.cols)
         if y is not None:
             return data.iloc[:, :-1], data.iloc[:, -1]
         else:
@@ -190,18 +192,18 @@ class Scaler(BaseEstimator, TransformerMixin):
             self.scaler = pre.RobustScaler()
         else:
             raise NotImplementedError
-        df_copy = pd.concat([X.copy(), y.copy()], axis=1) if y is not None else X.copy()
+        df_copy = X.copy()
         df_copy = df_copy.to_frame() if isinstance(df_copy, pd.Series) else df_copy
-        self.cols = self.cols if self.cols else list(df_copy.columns)
+        self.cols = self.cols if self.cols is not None else list(df_copy.columns)
         self.scaler = self.scaler.fit(df_copy[self.cols])
         return self
 
     def transform(self, X, y=None):
-        df_copy = pd.concat([X.copy(), y.copy()], axis=1) if y is not None else X.copy()
+        df_copy = X.copy()
         df_copy = df_copy.to_frame() if isinstance(df_copy, pd.Series) else df_copy
         df_copy[self.cols] = self.scaler.transform(df_copy[self.cols])
         if y is not None:
-            return df_copy.iloc[:, :-1], df_copy.iloc[:, -1]
+            return df_copy, y
         else:
             return df_copy
 
@@ -210,11 +212,11 @@ class Scaler(BaseEstimator, TransformerMixin):
         return self.transform(X, y)
 
     def inverse_transform(self, X, y=None):
-        df_copy = pd.concat([X.copy(), y.copy()], axis=1) if y is not None else X.copy()
+        df_copy = X.copy()
         df_copy = df_copy.to_frame() if isinstance(df_copy, pd.Series) else df_copy
         df_copy[self.cols] = self.scaler.inverse_transform(df_copy[self.cols])
         if y is not None:
-            return df_copy.iloc[:, :-1], df_copy.iloc[:, -1]
+            return df_copy, y
         else:
             return df_copy
 
@@ -222,7 +224,8 @@ class Scaler(BaseEstimator, TransformerMixin):
         self.__cache = None
         gc.collect()
 
-class Normalize(BaseEstimator, TransformerMixin):
+
+class Normalizer(BaseEstimator, TransformerMixin):
     def __init__(self, cols=None, method='yeo-johnson'):
         self.cols = cols
         self.method = method
@@ -234,18 +237,18 @@ class Normalize(BaseEstimator, TransformerMixin):
             self.normalizer = pre.PowerTransformer(method=self.method)
         else:
             raise NotImplementedError
-        df_copy = pd.concat([X.copy(), y.copy()], axis=1) if y is not None else X.copy()
+        df_copy = X.copy()
         df_copy = df_copy.to_frame() if isinstance(df_copy, pd.Series) else df_copy
-        self.cols = self.cols if self.cols else list(df_copy.columns)
+        self.cols = self.cols if self.cols is not None else df_copy.columns
         self.normalizer = self.normalizer.fit(df_copy[self.cols])
         return self
 
     def transform(self, X, y=None):
-        df_copy = pd.concat([X.copy(), y.copy()], axis=1) if y is not None else X.copy()
+        df_copy = X.copy()
         df_copy = df_copy.to_frame() if isinstance(df_copy, pd.Series) else df_copy
         df_copy[self.cols] = self.normalizer.transform(df_copy[self.cols])
         if y is not None:
-            return df_copy.iloc[:, :-1], df_copy.iloc[:, -1]
+            return df_copy, y
         else:
             return df_copy
 
@@ -254,11 +257,11 @@ class Normalize(BaseEstimator, TransformerMixin):
         return self.transform(X, y)
 
     def inverse_transform(self, X, y=None):
-        df_copy = pd.concat([X.copy(), y.copy()], axis=1) if y is not None else X.copy()
+        df_copy = X.copy()
         df_copy = df_copy.to_frame() if isinstance(df_copy, pd.Series) else df_copy
         df_copy[self.cols] = self.normalizer.inverse_transform(df_copy[self.cols])
         if y is not None:
-            return df_copy.iloc[:, :-1], df_copy.iloc[:, -1]
+            return df_copy, y
         else:
             return df_copy
 
