@@ -193,6 +193,7 @@ class MICSelector(BaseEstimator, TransformerMixin):
         self.model.compute_score(X.values, y.values)
         return self
 
+
     def transform(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
         X_cols = X.columns.tolist()
@@ -207,3 +208,4 @@ class MICSelector(BaseEstimator, TransformerMixin):
     def fit_transform(self, X, y=None, **fit_params):
         self.fit(X, y)
         return self.transform(X, y)
+

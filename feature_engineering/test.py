@@ -62,3 +62,4 @@ if __name__ == '__main__':
         score_weighted = score_weighted.mean(axis=0).rename('weighted')
         score = pd.concat([score_base, score_bag, score_weighted], axis=1)
         return score
+

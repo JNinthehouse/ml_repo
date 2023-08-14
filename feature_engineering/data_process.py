@@ -224,7 +224,6 @@ class Scaler(BaseEstimator, TransformerMixin):
         self.__cache = None
         gc.collect()
 
-
 class Normalizer(BaseEstimator, TransformerMixin):
     def __init__(self, cols=None, method='yeo-johnson'):
         self.cols = cols

@@ -1,7 +1,6 @@
 import pandas as pd
 import sklearn.metrics as ms
 
-
 def get_score(y_true, y_pred, y_proba=None, type='classification'):
     # type : 'classification', 'regression'
     y_true = y_true.values if isinstance(y_true, pd.DataFrame | pd.Series) else y_true

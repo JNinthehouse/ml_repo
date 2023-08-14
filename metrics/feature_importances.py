@@ -1,6 +1,5 @@
 import pandas as pd
 
-
 class FeatureImportances:
     def __init__(self, X, y, model):
         self.X = X

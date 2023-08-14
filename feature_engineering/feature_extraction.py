@@ -345,3 +345,4 @@ class OneHotEncoder(BaseEstimator, TransformerMixin):
         self.cols = None
         self.transformed_cols = None
         gc.collect()
+

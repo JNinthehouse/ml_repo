@@ -94,4 +94,3 @@ class PipeLine:
 
     def set_params(self,**params):
         return self.pipeline.set_params(**params)
-
