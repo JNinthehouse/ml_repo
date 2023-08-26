@@ -67,7 +67,8 @@ class DetectOutlier(BaseEstimator, TransformerMixin):
         else:
             data = data.loc[~self.mask]
         if y is not None:
-            return data.iloc[:, :-1], data.iloc[:, -1]
+            label = y.loc[data.index]
+            return data, label
         else:
             return data
 
@@ -195,13 +196,15 @@ class Scaler(BaseEstimator, TransformerMixin):
         df_copy = X.copy()
         df_copy = df_copy.to_frame() if isinstance(df_copy, pd.Series) else df_copy
         self.cols = self.cols if self.cols is not None else list(df_copy.columns)
-        self.scaler = self.scaler.fit(df_copy[self.cols])
+        self.scaler = self.scaler.fit(
+            df_copy[self.cols].to_frame() if isinstance(df_copy[self.cols], pd.Series) else df_copy[self.cols])
         return self
 
     def transform(self, X, y=None):
         df_copy = X.copy()
         df_copy = df_copy.to_frame() if isinstance(df_copy, pd.Series) else df_copy
-        df_copy[self.cols] = self.scaler.transform(df_copy[self.cols])
+        df_copy[self.cols] = self.scaler.transform(
+            df_copy[self.cols].to_frame() if isinstance(df_copy[self.cols], pd.Series) else df_copy[self.cols])
         if y is not None:
             return df_copy, y
         else:
@@ -214,7 +217,8 @@ class Scaler(BaseEstimator, TransformerMixin):
     def inverse_transform(self, X, y=None):
         df_copy = X.copy()
         df_copy = df_copy.to_frame() if isinstance(df_copy, pd.Series) else df_copy
-        df_copy[self.cols] = self.scaler.inverse_transform(df_copy[self.cols])
+        df_copy[self.cols] = self.scaler.inverse_transform(
+            df_copy[self.cols].to_frame() if isinstance(df_copy[self.cols], pd.Series) else df_copy[self.cols])
         if y is not None:
             return df_copy, y
         else:
@@ -239,13 +243,15 @@ class Normalizer(BaseEstimator, TransformerMixin):
         df_copy = X.copy()
         df_copy = df_copy.to_frame() if isinstance(df_copy, pd.Series) else df_copy
         self.cols = self.cols if self.cols is not None else df_copy.columns
-        self.normalizer = self.normalizer.fit(df_copy[self.cols])
+        self.normalizer = self.normalizer.fit(
+            df_copy[self.cols].to_frame() if isinstance(df_copy[self.cols], pd.Series) else df_copy[self.cols])
         return self
 
     def transform(self, X, y=None):
         df_copy = X.copy()
         df_copy = df_copy.to_frame() if isinstance(df_copy, pd.Series) else df_copy
-        df_copy[self.cols] = self.normalizer.transform(df_copy[self.cols])
+        df_copy[self.cols] = self.normalizer.transform(
+            df_copy[self.cols].to_frame() if isinstance(df_copy[self.cols], pd.Series) else df_copy[self.cols])
         if y is not None:
             return df_copy, y
         else:
@@ -269,7 +275,7 @@ class Normalizer(BaseEstimator, TransformerMixin):
         gc.collect()
 
 
-class Sampler(BaseEstimator, TransformerMixin):
+class OverSampler(BaseEstimator, TransformerMixin):
     def __init__(self, method='borderlinesmote', **kwargs):
         # borderlinesmote 参数
         # sampling_strategy = 'auto', 自动均衡样本
@@ -282,16 +288,13 @@ class Sampler(BaseEstimator, TransformerMixin):
         self.kwargs = kwargs
         self.X_resampled = None
         self.y_resampled = None
-        if self.method == 'over':
-            from imblearn.over_sampling import RandomOverSampler, SMOTE, ADASYN
-            if 'sampling_strategy' in self.kwargs:
-                self.kwargs['sampling_strategy'] = self.kwargs['sampling_strategy']
+        if 'sampling_strategy' in self.kwargs:
+            self.sampling_strategy = self.kwargs.pop('sampling_strategy')
+        else:
+            self.sampling_strategy = 'auto'
+        if self.method == 'random':
+            from imblearn.over_sampling import RandomOverSampler
             self.sampler = RandomOverSampler(**self.kwargs)
-        elif self.method == 'under':
-            from imblearn.under_sampling import RandomUnderSampler
-            if 'sampling_strategy' in self.kwargs:
-                self.kwargs['sampling_strategy'] = self.kwargs['sampling_strategy']
-            self.sampler = RandomUnderSampler(**self.kwargs)
         elif self.method == 'smote':
             from imblearn.over_sampling import SMOTE
             self.sampler = SMOTE(**self.kwargs)
@@ -304,9 +307,33 @@ class Sampler(BaseEstimator, TransformerMixin):
         else:
             raise NotImplementedError
 
+    def convert_sampling_strategy(self, y):
+        from collections import OrderedDict
+        if isinstance(self.sampling_strategy, OrderedDict | dict):
+            y_values = y.iloc[:, 0].value_counts()
+            for key in self.sampling_strategy.keys():
+                if key not in y_values.index:
+                    raise ValueError(f'{key} not in y')
+                value = self.sampling_strategy[key]
+                if 0 <= value <= 1:
+                    self.sampling_strategy[key] = int(value * y_values[key])
+                elif value > 1:
+                    self.sampling_strategy[key] = int(value) if int(value) < y_values[key] else y_values[key]
+                else:
+                    raise ValueError(f'{value} is not valid')
+            return self.sampling_strategy
+        elif isinstance(self.sampling_strategy, str):
+            return self.sampling_strategy
+        elif isinstance(self.sampling_strategy, float | int):
+            return self.sampling_strategy
+        else:
+            raise NotImplementedError
+
     def fit(self, X, y):
         X = X.to_frame() if isinstance(X, pd.Series) else X
         y = y.to_frame() if isinstance(y, pd.Series) else y
+        self.sampling_strategy = self.convert_sampling_strategy(y)
+        self.sampler = self.sampler.set_params(sampling_strategy=self.sampling_strategy)
         self.X_resampled, self.y_resampled = self.sampler.fit_resample(X, y)
         self.X_resampled = self.X_resampled.to_frame() if isinstance(self.X_resampled, pd.Series) else self.X_resampled
         self.y_resampled = self.y_resampled.to_frame() if isinstance(self.y_resampled, pd.Series) else self.y_resampled
@@ -334,3 +361,136 @@ class Sampler(BaseEstimator, TransformerMixin):
         self.X_resampled = None
         self.y_resampled = None
         gc.collect()
+
+
+class UnderSampler(BaseEstimator, TransformerMixin):
+    def __init__(self, cols=None, **kwargs):
+        self.cols = cols
+        self.kwargs = kwargs
+        if 'sampling_strategy' in self.kwargs:
+            self.sampling_strategy = self.kwargs.pop('sampling_strategy')
+        else:
+            self.sampling_strategy = 'auto'
+        from imblearn.under_sampling import RandomUnderSampler
+        self.sampler = RandomUnderSampler(**self.kwargs)
+
+    def convert_sampling_strategy(self, y):
+        from collections import OrderedDict
+        if isinstance(self.sampling_strategy, OrderedDict | dict):
+            y_values = y.iloc[:, 0].value_counts()
+            for key in self.sampling_strategy.keys():
+                if key not in y_values.index:
+                    raise ValueError(f'{key} not in y')
+                value = self.sampling_strategy[key]
+                if 0 <= value <= 1:
+                    self.sampling_strategy[key] = int(value * y_values[key])
+                elif value > 1:
+                    self.sampling_strategy[key] = int(value) if int(value) < y_values[key] else y_values[key]
+                else:
+                    raise ValueError(f'{value} is not valid')
+            return self.sampling_strategy
+        elif isinstance(self.sampling_strategy, str):
+            return self.sampling_strategy
+        elif isinstance(self.sampling_strategy, float | int):
+            return self.sampling_strategy
+        else:
+            raise NotImplementedError
+
+    def fit(self, X, y=None):
+        y = y.to_frame() if isinstance(y, pd.Series) else y
+        data = pd.concat([X, y], axis=1) if y is not None else X.copy()
+        data = data.to_frame() if isinstance(data, pd.Series) else data
+        if self.cols is None:
+            if y is not None:
+                self.sampling_strategy = self.convert_sampling_strategy(y)
+                self.sampler = self.sampler.set_params(sampling_strategy=self.sampling_strategy)
+                self.sampler.fit(X, y)
+            else:
+                raise ValueError('y is None')
+        else:
+            if self.cols in data.columns:
+                self.sampling_strategy = self.convert_sampling_strategy(
+                    data[self.cols].to_frame() if isinstance(data[self.cols], pd.Series) else data[self.cols])
+                self.sampler = self.sampler.set_params(sampling_strategy=self.sampling_strategy)
+                self.sampler.fit(data.drop(self.cols, axis=1), data[self.cols])
+            else:
+                raise ValueError(f'{self.cols} not in data')
+        return self
+
+    def transform(self, X, y=None):
+        data = pd.concat([X, y], axis=1) if y is not None else X.copy()
+        data = data.to_frame() if isinstance(data, pd.Series) else data
+        if self.cols is None:
+            if y is not None:
+                X_resampled, y_resampled = self.sampler.fit_resample(X, y)
+                return X_resampled, y_resampled
+            else:
+                raise ValueError('y is None')
+        else:
+            if self.cols in data.columns:
+                X_resampled, y_resampled = self.sampler.fit_resample(data.drop(self.cols, axis=1), data[self.cols])
+                X_resampled = pd.concat([X_resampled, y_resampled], axis=1)
+                gc.collect()
+                if y is None:
+                    return X_resampled
+                else:
+                    X_resampled, y_resampled = X_resampled[data.columns.tolist()[:-1]], X_resampled[
+                        data.columns.tolist()[-1]]
+                    del data
+                    gc.collect()
+                    return X_resampled, y_resampled
+            else:
+                raise ValueError(f'{self.cols} not in data')
+
+    def fit_transform(self, X, y=None, **fit_params):
+        self.fit(X, y)
+        return self.transform(X, y)
+
+
+class TypeTransfer(BaseEstimator, TransformerMixin):
+    def __init__(self, to_type='array', verbose=False):
+        # to_type = 'array' | 'dataframe'
+        assert to_type in ['array', 'dataframe']
+        self.to_type = to_type
+        self.verbose = verbose
+
+    def fit(self, X, y=None):
+        return self
+
+    def _transform(self, X):
+        x_type = X.__class__.__name__.lower()
+        x_type = 'array' if x_type == 'ndarray' else x_type
+        assert x_type in ['array', 'dataframe']
+        if self.to_type == 'array':
+            if x_type == 'array':
+                pass
+            elif x_type == 'dataframe':
+                X = X.values
+            else:
+                raise NotImplementedError
+        elif self.to_type == 'dataframe':
+            if x_type == 'array':
+                X = pd.DataFrame(X)
+            elif x_type == 'dataframe':
+                pass
+            else:
+                raise NotImplementedError
+        else:
+            raise NotImplementedError
+        return X
+
+    def transform(self, X, y=None):
+        if self.verbose:
+            print(type(X))
+        X = self._transform(X)
+        if y is not None:
+            if self.verbose:
+                print(type(y))
+            y = self._transform(y)
+            return X, y
+        else:
+            return X
+
+    def fit_transform(self, X, y=None, **fit_params):
+        self.fit(X, y)
+        return self.transform(X, y)

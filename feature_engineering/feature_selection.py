@@ -4,7 +4,6 @@ from sklearn.base import BaseEstimator, TransformerMixin
 import pandas as pd
 import random
 
-
 class CVSelector(BaseEstimator, TransformerMixin):
     def __init__(self, threshold=0.0):
         self.threshold = threshold
@@ -142,12 +141,14 @@ class CategorySelector(BaseEstimator, TransformerMixin):
     def __init__(self, threshold=10, drop=False):
         self.threshold = threshold
         self.drop = drop
-        self.unique_values = None
+        self.info = None
+        self.category_cols = None
 
     def fit(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
         X_nunique = X.nunique()
-        self.unique_values = X_nunique
+        self.info = pd.concat([X_nunique, X.dtypes], axis=1).reset_index()
+        self.info.columns = ['colnames', 'n_unique', 'dtypes']
         if 0 <= self.threshold < 1:
             self.category_cols = X_nunique.loc[X_nunique <= self.threshold * X.shape[0]].index.tolist()
         elif self.threshold >= 1 and int(self.threshold) == self.threshold:
@@ -173,7 +174,7 @@ class CategorySelector(BaseEstimator, TransformerMixin):
 
     def clear(self):
         self.__cache = None
-        self.unique_values = None
+        self.info = None
         self.category_cols = None
         gc.collect()
 
@@ -187,20 +188,28 @@ class MICSelector(BaseEstimator, TransformerMixin):
         self.est = est
         self.model = MINE(alpha=alpha, c=c, est=est)
         self.threshold = threshold
+        self.score = None
 
     def fit(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
-        self.model.compute_score(X.values, y.values)
+        X_cols = X.columns.tolist()
+        self.score = pd.Series(index=X_cols, name='MIC score')
+        try:
+            for cols in X_cols:
+                self.model.compute_score(X[cols].values, y.values.ravel())
+                self.score[cols] = self.model.mic()
+        except Exception as e:
+            self.score = None
+            raise e
         return self
-
 
     def transform(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
-        X_cols = X.columns.tolist()
-        self.score = pd.DataFrame(self.model.mic(), index=X_cols, columns=['mic'])
+        if self.score is None:
+            raise ValueError('score is None, please fit first')
         if 0 <= self.threshold <= 1:
-            mask = (self.score > self.threshold).values.ravel()
-            return (X.iloc[:, mask], y) if y is None else X.iloc[:, mask]
+            mask = self.score.loc[self.score > self.threshold].index.tolist()
+            return (X.loc[:, mask], y) if y is None else X.loc[:, mask]
         elif self.threshold in range(1, X.shape[1] + 1):
             mask = self.score.sort_values(ascending=False).index[:self.threshold].values
             return (X.loc[:, mask], y) if y is None else X.loc[:, mask]
@@ -209,3 +218,69 @@ class MICSelector(BaseEstimator, TransformerMixin):
         self.fit(X, y)
         return self.transform(X, y)
 
+    def clear(self):
+        self.score = None
+        gc.collect()
+
+
+class DcorSelector(BaseEstimator, TransformerMixin):
+    def __init__(self, threshold=0.1):
+        self.threshold = threshold
+        self.score = None
+
+    def distcorr(self, X, Y):
+        from scipy.spatial.distance import pdist, squareform
+        import numpy as np
+        X = np.atleast_1d(X)
+        Y = np.atleast_1d(Y)
+        if np.prod(X.shape) == len(X):
+            X = X[:, None]
+        if np.prod(Y.shape) == len(Y):
+            Y = Y[:, None]
+        X = np.atleast_2d(X)
+        Y = np.atleast_2d(Y)
+        n = X.shape[0]
+        if Y.shape[0] != X.shape[0]:
+            raise ValueError('Number of samples must match')
+        a = squareform(pdist(X))
+        b = squareform(pdist(Y))
+        A = a - a.mean(axis=0)[None, :] - a.mean(axis=1)[:, None] + a.mean()
+        B = b - b.mean(axis=0)[None, :] - b.mean(axis=1)[:, None] + b.mean()
+
+        dcov2_xy = (A * B).sum() / float(n * n)
+        dcov2_xx = (A * A).sum() / float(n * n)
+        dcov2_yy = (B * B).sum() / float(n * n)
+        dcor = np.sqrt(dcov2_xy) / np.sqrt(np.sqrt(dcov2_xx) * np.sqrt(dcov2_yy))
+        return dcor
+
+    def fit(self, X, y=None):
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+        X_cols = X.columns.tolist()
+        self.score = pd.Series(index=X_cols, name='DCOR score')
+        try:
+            for cols in X_cols:
+                self.score[cols] = self.distcorr(X[cols].values, y.values.ravel())
+        except Exception as e:
+            self.score = None
+            raise e
+        return self
+
+    def transform(self, X, y=None):
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        if self.score is None:
+            raise ValueError('score is None, please fit first')
+        if 0 <= self.threshold <= 1:
+            mask = self.score.loc[self.score > self.threshold].index.tolist()
+            return (X.loc[:, mask], y) if y is None else X.loc[:, mask]
+        elif self.threshold in range(1, X.shape[1] + 1):
+            mask = self.score.sort_values(ascending=False).index[:self.threshold].values
+            return (X.loc[:, mask], y) if y is None else X.loc[:, mask]
+
+    def fit_transform(self, X, y=None, **fit_params):
+        self.fit(X, y)
+        return self.transform(X, y)
+
+    def clear(self):
+        self.score = None
+        gc.collect()
