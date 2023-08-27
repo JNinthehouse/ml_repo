@@ -37,7 +37,6 @@ class CVSelector(BaseEstimator, TransformerMixin):
         return model.transform(X, y)
 
     def clear(self):
-        self.__cache = None
         self.cv = None
         gc.collect()
 
@@ -64,7 +63,6 @@ class NASelector(BaseEstimator, TransformerMixin):
         return self.transform(X, y)
 
     def clear(self):
-        self.__cache = None
         self.threshold_feature = None
         gc.collect()
 
