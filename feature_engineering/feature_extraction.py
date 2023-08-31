@@ -20,6 +20,7 @@ class FeatureBoostingGenerator(BaseEstimator, TransformerMixin):
                  min_candidate_features=500
                  ):
         self._generator = openfe.OpenFE()
+        assert task in ['classification', 'regression'], 'task must be classification or regression'
         self.task = task
         self.get_formula = openfe.tree_to_formula
         if n_jobs is not None:
@@ -28,9 +29,12 @@ class FeatureBoostingGenerator(BaseEstimator, TransformerMixin):
             import multiprocessing
             self.n_jobs = multiprocessing.cpu_count()
         self.new_features = None
-        self.numerical_features = numerical_features
-        self.categorical_features = categorical_features
-        self.ordinal_features = ordinal_features
+        self.num_features = [numerical_features] if (not isinstance(numerical_features, list)) and (
+                    numerical_features is not None) else numerical_features
+        self.cat_features = [categorical_features] if (not isinstance(categorical_features, list)) and (
+                    categorical_features is not None) else categorical_features
+        self.ord_features = [ordinal_features] if (not isinstance(ordinal_features, list)) and (
+                    ordinal_features is not None) else ordinal_features
         self.verbose = verbose
         self.feature_boosting = feature_boosting
         self.seed = seed
@@ -39,9 +43,9 @@ class FeatureBoostingGenerator(BaseEstimator, TransformerMixin):
         self.min_candidate_features = min_candidate_features
 
     def fit(self, X, y):
-        self.candidate_features = openfe.get_candidate_features(numerical_features=self.numerical_features,
-                                                                categorical_features=self.categorical_features,
-                                                                ordinal_features=self.ordinal_features)
+        self.candidate_features = openfe.get_candidate_features(numerical_features=self.num_features,
+                                                                categorical_features=self.cat_features,
+                                                                ordinal_features=self.ord_features)
         self.new_features = self._generator.fit(data=X,
                                                 label=y,
                                                 task=self.task,
@@ -77,8 +81,10 @@ class FeatureBoostingGenerator(BaseEstimator, TransformerMixin):
 
     def clear(self):
         self.new_features = None
-        self.categorical_features = None
-        self.__cache = None
+        self.num_features = None
+        self.cat_features = None
+        self.ord_features = None
+        self.candidate_features = None
         gc.collect()
 
 
@@ -95,6 +101,7 @@ class CatBoostEncoder(BaseEstimator, TransformerMixin):
         # handel_missing:'error', np.nan, 'value'
         # handel_unknown:'error', np.nan, 'value'
         import category_encoders as ce
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
         self.drop_invariant = drop_invariant
         self.return_df = return_df
         self.handle_missing = 'return_nan' if handle_missing != handle_missing else handle_missing
@@ -116,7 +123,6 @@ class CatBoostEncoder(BaseEstimator, TransformerMixin):
         except:
             raise ValueError('CatBoostEncoder only support categorical features')
         self._ce.fit(X[self.cols], y)
-        self._mapping = self._ce.mapping
         return self
 
     def clear(self):
@@ -130,6 +136,7 @@ class CatBoostEncoder(BaseEstimator, TransformerMixin):
 
     @cols.setter
     def cols(self, cols):
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
         self._ce.cols = cols
 
     def transform(self, X, y=None):
@@ -137,17 +144,6 @@ class CatBoostEncoder(BaseEstimator, TransformerMixin):
         X[self.cols] = X[self.cols].astype('category')
         X[self.cols] = self._ce.transform(X[self.cols])
         return (X, y) if y is not None else X
-
-    def inverse_transform(self, X, y=None):
-        data = X.to_frame() if isinstance(X, pd.Series) else X.copy()
-        if y is not None:
-            y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
-            data = pd.concat([data, y], axis=1)
-        for key, value in self._mapping.items():
-            value = value.to_dict()
-            value = {v: k for k, v in value.items()}
-            data[key] = data[key].map(value)
-        return (data.iloc[:, :-1], data.iloc[:, -1]) if y is not None else data
 
     def fit_transform(self, X, y=None, **fit_params):
         self.fit(X, y)
@@ -162,7 +158,9 @@ class OrdinaryEncoder(BaseEstimator, TransformerMixin):
                  min_frequency=1,
                  ):
         # handle_unknown: 'error', 'value'
+        # handle_missing: np.nan, int
         from sklearn.preprocessing import OrdinalEncoder as oe
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
         self.cols = cols
         self.handle_unknown = 'use_encoded_value' if handle_unknown == 'value' else 'error'
         self.unknown_value = unknown_value
@@ -219,6 +217,7 @@ class CountEncoder(BaseEstimator, TransformerMixin):
         # handle_unknown: 'error', 'value', np.nan
         # handle_missing: 'error', 'value', np.nan
         import category_encoders as ce
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
         self.handle_unknown = 'return_nan' if handle_unknown == np.nan else handle_unknown
         self.handle_missing = 'return_nan' if handle_missing == np.nan else handle_missing
         self.min_group_size = min_group_size
@@ -241,6 +240,7 @@ class CountEncoder(BaseEstimator, TransformerMixin):
 
     @cols.setter
     def cols(self, cols):
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
         self._ce.cols = cols
 
     def fit(self, X, y=None):
@@ -288,6 +288,7 @@ class OneHotEncoder(BaseEstimator, TransformerMixin):
         # handle_unknown: 'error', 'value', np.nan
         # handle_missing: 'error', 'value', np.nan, 'indicator'
         from category_encoders import OneHotEncoder as ohe
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
         self.handle_unknown = 'return_nan' if handle_unknown == np.nan else handle_unknown
         self.handle_missing = 'return_nan' if handle_missing == np.nan else handle_missing
         self.use_cat_names = use_cat_names
@@ -303,6 +304,7 @@ class OneHotEncoder(BaseEstimator, TransformerMixin):
 
     @cols.setter
     def cols(self, cols):
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
         self._ohe.cols = cols
 
     def fit(self, X, y=None):
@@ -346,3 +348,62 @@ class OneHotEncoder(BaseEstimator, TransformerMixin):
         self.transformed_cols = None
         gc.collect()
 
+
+class WOEEncoder(BaseEstimator, TransformerMixin):
+    def __init__(self,
+                 cols=None,
+                 handle_unknown='value',
+                 handle_missing=np.nan,
+                 randomized=False,
+                 sigma=0.05,
+                 ):
+        # handle_unknown: 'error', 'value', np.nan
+        # handle_missing: 'error', 'value', np.nan
+        from category_encoders import WOEEncoder as we
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
+        self.handle_unknown = 'return_nan' if handle_unknown == np.nan else handle_unknown
+        self.handle_missing = 'return_nan' if handle_missing == np.nan else handle_missing
+        self.randomized = randomized
+        self.sigma = sigma
+        self.__we = we(cols=cols,
+                       handle_unknown=self.handle_unknown,
+                       handle_missing=self.handle_missing,
+                       randomized=self.randomized,
+                       sigma=self.sigma)
+
+    @property
+    def cols(self):
+        return self.__we.cols
+
+    @cols.setter
+    def cols(self, cols):
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
+        self.__we.cols = cols
+
+    def fit(self, X, y):
+        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+        y_value_counts = y.iloc[:, 0].value_counts()
+        if len(y_value_counts) != 2:
+            raise ValueError('WOEEncoder only support binary classification')
+        else:
+            y_values_map = {y_value_counts.index[0]: 0, y_value_counts.index[1]: 1}
+            y.iloc[:, 0] = y.iloc[:, 0].map(y_values_map)
+            X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+            if self.cols is None:
+                self.cols = X.columns.tolist()
+            else:
+                if set(self.cols) <= set(X.columns.tolist()):
+                    pass
+                else:
+                    raise ValueError('cols must be subset of X.columns')
+            self.__we.fit(X[self.cols], y.iloc[:, 0])
+            return self
+
+    def transform(self, X, y=None):
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        X[self.cols] = self.__we.transform(X[self.cols])
+        return (X, y) if y is not None else X
+
+    def fit_transform(self, X, y=None, **fit_params):
+        self.fit(X, y)
+        return self.transform(X, y)

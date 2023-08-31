@@ -32,4 +32,6 @@ def get_score(y_true, y_pred, y_proba=None, type='classification'):
             'median_absolute_error': ms.median_absolute_error(y_true, y_pred),
             'r2_score': ms.r2_score(y_true, y_pred),
         }
+    else:
+        raise ValueError('type must be classification or regression')
     return results

@@ -36,8 +36,9 @@ def debugger(func):
 
 class EarlyStopping:
 
-    def __init__(self, patience=7, verbose=False, delta=0, path='weight7-stop.pth', trace_func=print):
+    def __init__(self, patience=10, verbose=False, delta=0, path=None, trace_func=print):
 
+        assert isinstance(patience, int) and patience >= 1, 'patience must be a positive integer'
         self.patience = patience
         self.verbose = verbose
         self.counter = 0
@@ -45,7 +46,7 @@ class EarlyStopping:
         self.early_stop = False
         self.val_loss_min = np.Inf
         self.delta = delta
-        self.path = path
+        self.path = path if path is not None else str(patience) + '-stop-checkpoint.pth'
         self.trace_func = trace_func
 
     def __call__(self, val_loss, model):

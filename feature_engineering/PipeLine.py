@@ -3,7 +3,11 @@ from sklearn.pipeline import Pipeline, make_pipeline
 
 
 class PipeLine(Pipeline):
-    def __init__(self, steps=None, memory=None, verbose=False):
+    def __init__(self, steps=None, memory=None, verbose=False) -> object:
+        """
+
+        :rtype: object
+        """
         if steps is not None:
             if (isinstance(steps, list) and
                     all([isinstance(i, tuple) for i in steps]) and
@@ -174,3 +178,19 @@ class PipeLine(Pipeline):
         X = self._data_flow(X, **predict_params)
         if self.maskcode[list(self.maskcode.keys())[-1]] and hasattr(self.steps[-1][1], 'decision_function'):
             return self.steps[-1][1].decision_function(X, **predict_params)
+
+    def inverse_transform(self, X, y=None, **fit_params):
+        if len(self.steps) == 1:
+            if self.maskcode[list(self.maskcode.keys())[0]]:
+                return self.steps[0][1].inverse_transform(X, y, **fit_params)
+            else:
+                return (X, y) if y is not None else X
+        else:
+            for name, steps in self.steps[::-1]:
+                if self.maskcode[name]:
+                    res = steps.inverse_transform(X, y, **fit_params)
+                    if y is None:
+                        X = res
+                    else:
+                        X, y = res
+            return (X, y) if y is not None else X

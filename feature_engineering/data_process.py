@@ -7,6 +7,7 @@ import gc
 class DetectOutlier(BaseEstimator, TransformerMixin):
     def __init__(self, drop=True, cols=None, threshold=0.5, method='iqr', **kwargs):
         self.drop = drop
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
         self.cols = cols
         self.threshold = threshold
         self.method = method
@@ -84,6 +85,7 @@ class DetectOutlier(BaseEstimator, TransformerMixin):
 
 class FillNA(BaseEstimator, TransformerMixin):
     def __init__(self, cols=None, by=None, method='mean'):
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
         self.cols = cols
         self.by = by
         self.method = method
@@ -128,6 +130,7 @@ class FillNA(BaseEstimator, TransformerMixin):
 class DropNA(BaseEstimator, TransformerMixin):
     def __init__(self, cols=None, threshold=0.5):
         self.threshold_sample = threshold
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
         self.cols = cols
 
     def fit(self, X, y=None):
@@ -155,6 +158,7 @@ class DropNA(BaseEstimator, TransformerMixin):
 
 class DropDuplicates(BaseEstimator, TransformerMixin):
     def __init__(self, cols=None):
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
         self.cols = cols
 
     def fit(self, X, y=None):
@@ -179,6 +183,7 @@ class DropDuplicates(BaseEstimator, TransformerMixin):
 
 class Scaler(BaseEstimator, TransformerMixin):
     def __init__(self, cols=None, method='robust'):
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
         self.cols = cols
         self.method = method
 
@@ -230,16 +235,17 @@ class Scaler(BaseEstimator, TransformerMixin):
 
 class Normalizer(BaseEstimator, TransformerMixin):
     def __init__(self, cols=None, method='yeo-johnson'):
+        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
         self.cols = cols
         self.method = method
-
-    def fit(self, X, y=None):
         if self.method == 'yeo-johnson':
             self.normalizer = pre.PowerTransformer(method=self.method)
         elif self.method == 'box-cox':
             self.normalizer = pre.PowerTransformer(method=self.method)
         else:
             raise NotImplementedError
+
+    def fit(self, X, y=None):
         df_copy = X.copy()
         df_copy = df_copy.to_frame() if isinstance(df_copy, pd.Series) else df_copy
         self.cols = self.cols if self.cols is not None else df_copy.columns
@@ -271,12 +277,12 @@ class Normalizer(BaseEstimator, TransformerMixin):
             return df_copy
 
     def clear(self):
-        self.__cache = None
+        self.cols = None
         gc.collect()
 
 
 class OverSampler(BaseEstimator, TransformerMixin):
-    def __init__(self, method='borderlinesmote', **kwargs):
+    def __init__(self, method='random', **kwargs):
         # borderlinesmote 参数
         # sampling_strategy = 'auto', 自动均衡样本
         # random_state = 42, 随机种子
@@ -288,10 +294,13 @@ class OverSampler(BaseEstimator, TransformerMixin):
         self.kwargs = kwargs
         self.X_resampled = None
         self.y_resampled = None
+        self.__cache_params = None
         if 'sampling_strategy' in self.kwargs:
             self.sampling_strategy = self.kwargs.pop('sampling_strategy')
         else:
             self.sampling_strategy = 'auto'
+        if 'shrinkage' not in self.kwargs:
+            self.kwargs['shrinkage'] = 0
         if self.method == 'random':
             from imblearn.over_sampling import RandomOverSampler
             self.sampler = RandomOverSampler(**self.kwargs)
@@ -315,29 +324,51 @@ class OverSampler(BaseEstimator, TransformerMixin):
                 if key not in y_values.index:
                     raise ValueError(f'{key} not in y')
                 value = self.sampling_strategy[key]
-                if 0 <= value <= 1:
-                    self.sampling_strategy[key] = int(value * y_values[key])
-                elif value > 1:
-                    self.sampling_strategy[key] = int(value) if int(value) < y_values[key] else y_values[key]
+                if value > 1:
+                    if isinstance(value, float):
+                        self.sampling_strategy[key] = int(value * y_values[key])
+                    else:
+                        self.sampling_strategy[key] = int(value) if int(value) > y_values[key] else y_values[key]
                 else:
                     raise ValueError(f'{value} is not valid')
             return self.sampling_strategy
         elif isinstance(self.sampling_strategy, str):
             return self.sampling_strategy
-        elif isinstance(self.sampling_strategy, float | int):
+        elif isinstance(self.sampling_strategy, float):
+            return self.sampling_strategy if self.sampling_strategy >= 1 else 1
+        elif isinstance(self.sampling_strategy, int):
             return self.sampling_strategy
         else:
             raise NotImplementedError
 
-    def fit(self, X, y):
-        X = X.to_frame() if isinstance(X, pd.Series) else X
-        y = y.to_frame() if isinstance(y, pd.Series) else y
-        self.sampling_strategy = self.convert_sampling_strategy(y)
-        self.sampler = self.sampler.set_params(sampling_strategy=self.sampling_strategy)
-        self.X_resampled, self.y_resampled = self.sampler.fit_resample(X, y)
-        self.X_resampled = self.X_resampled.to_frame() if isinstance(self.X_resampled, pd.Series) else self.X_resampled
-        self.y_resampled = self.y_resampled.to_frame() if isinstance(self.y_resampled, pd.Series) else self.y_resampled
-        self.X_resampled, self.y_resampled = self.X_resampled.iloc[len(X):, :], self.y_resampled.iloc[len(y):, :]
+    def fit(self, X, y=None):
+        self.clear()
+        if self.method == 'random':
+            if y is not None:
+                sampling_strategy = self.convert_sampling_strategy(y)
+                if isinstance(sampling_strategy, float):
+                    self.__cache_params = {'frac': sampling_strategy - 1}
+                elif isinstance(sampling_strategy, int):
+                    sampling_strategy = X.shape[0] if sampling_strategy < X.shape[0] else sampling_strategy
+                    self.__cache_params = {'n': sampling_strategy - X.shape[0]}
+                else:
+                    self.sampler = self.sampler.set_params(sampling_strategy=sampling_strategy)
+                    self.sampler.fit(X, y)
+            else:
+                if isinstance(self.sampling_strategy, float):
+                    self.__cache_params = {'frac': self.sampling_strategy - 1}
+                elif isinstance(self.sampling_strategy, int):
+                    self.sampling_strategy = X.shape[0] if self.sampling_strategy < X.shape[
+                        0] else self.sampling_strategy
+                    self.__cache_params = {'n': self.sampling_strategy - X.shape[0]}
+                else:
+                    raise ValueError(f'sampling strategy:{self.sampling_strategy} is not valid cause no target')
+        else:
+            assert y is not None, 'target is None'
+            X = X.to_frame() if isinstance(X, pd.Series) else X
+            y = y.to_frame() if isinstance(y, pd.Series) else y
+            sampling_strategy = self.convert_sampling_strategy(y)
+            self.sampler = self.sampler.set_params(sampling_strategy=sampling_strategy)
         return self
 
     def fit_transform(self, X, y=None, **fit_params):
@@ -347,25 +378,65 @@ class OverSampler(BaseEstimator, TransformerMixin):
     def transform(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X
         y = y.to_frame() if isinstance(y, pd.Series) else y
-        assert (X.columns == self.X_resampled.columns).all() & (y.columns == self.y_resampled.columns).all()
-        X_all = pd.concat([X, self.X_resampled], axis=0)
-        y_all = pd.concat([y, self.y_resampled], axis=0)
-        return X_all, y_all
+        if self.method == 'random':
+            data = pd.concat([X, y], axis=1) if y is not None else X.copy()
+            data = data.to_frame() if isinstance(data, pd.Series) else data
+            if self.__cache_params is not None:
+                self.__cache_params['replace'] = True
+                if 'random_state' in self.kwargs:
+                    self.__cache_params['random_state'] = self.kwargs['random_state']
+                data = data.sample(**self.__cache_params)
+                if y is not None:
+                    self.X_resampled, self.y_resampled = data.iloc[:, :-1], data.iloc[:, -1]
+                    self.X_resampled = self.X_resampled.to_frame() if isinstance(self.X_resampled,
+                                                                                 pd.Series) else self.X_resampled
+                    self.y_resampled = self.y_resampled.to_frame() if isinstance(self.y_resampled,
+                                                                                 pd.Series) else self.y_resampled
+                else:
+                    self.X_resampled = data
+                    self.X_resampled = self.X_resampled.to_frame() if isinstance(self.X_resampled,
+                                                                                 pd.Series) else self.X_resampled
+            else:
+                if y is not None:
+                    self.X_resampled, self.y_resampled = self.sampler.fit_resample(X, y)
+                    self.X_resampled = self.X_resampled.to_frame() if isinstance(self.X_resampled,
+                                                                                 pd.Series) else self.X_resampled
+                    self.y_resampled = self.y_resampled.to_frame() if isinstance(self.y_resampled,
+                                                                                 pd.Series) else self.y_resampled
+                    self.X_resampled, self.y_resampled = self.X_resampled.iloc[len(X):, :], self.y_resampled.iloc[
+                                                                                            len(y):, :]
+                else:
+                    raise ValueError('target is None')
+            if y is not None:
+                return pd.concat([X, self.X_resampled], axis=0), pd.concat([y, self.y_resampled], axis=0)
+            else:
+                return pd.concat([X, self.X_resampled], axis=0)
+        else:
+            assert y is not None, 'target is None'
+            self.X_resampled, self.y_resampled = self.sampler.fit_resample(X, y)
+            self.X_resampled = self.X_resampled.to_frame() if isinstance(self.X_resampled,
+                                                                         pd.Series) else self.X_resampled
+            self.y_resampled = self.y_resampled.to_frame() if isinstance(self.y_resampled,
+                                                                         pd.Series) else self.y_resampled
+            self.X_resampled, self.y_resampled = self.X_resampled.iloc[len(X):, :], self.y_resampled.iloc[len(y):, :]
+            return pd.concat([X, self.X_resampled], axis=0), pd.concat([y, self.y_resampled], axis=0)
 
     @property
     def new_sample(self):
         return self.X_resampled, self.y_resampled
 
     def clear(self):
-        self.__cache = None
         self.X_resampled = None
         self.y_resampled = None
+        self.__cache_params = None
         gc.collect()
+
+    def get_params(self, deep=True):
+        return self.sampler.get_params(deep=deep)
 
 
 class UnderSampler(BaseEstimator, TransformerMixin):
-    def __init__(self, cols=None, **kwargs):
-        self.cols = cols
+    def __init__(self, **kwargs):
         self.kwargs = kwargs
         if 'sampling_strategy' in self.kwargs:
             self.sampling_strategy = self.kwargs.pop('sampling_strategy')
@@ -373,6 +444,7 @@ class UnderSampler(BaseEstimator, TransformerMixin):
             self.sampling_strategy = 'auto'
         from imblearn.under_sampling import RandomUnderSampler
         self.sampler = RandomUnderSampler(**self.kwargs)
+        self.__cache_params = None
 
     def convert_sampling_strategy(self, y):
         from collections import OrderedDict
@@ -391,60 +463,72 @@ class UnderSampler(BaseEstimator, TransformerMixin):
             return self.sampling_strategy
         elif isinstance(self.sampling_strategy, str):
             return self.sampling_strategy
-        elif isinstance(self.sampling_strategy, float | int):
+        elif isinstance(self.sampling_strategy, float):
+            return self.sampling_strategy if 0 < self.sampling_strategy <= 1 else 1
+        elif isinstance(self.sampling_strategy, int):
             return self.sampling_strategy
         else:
             raise NotImplementedError
 
     def fit(self, X, y=None):
+        self.clear()
         y = y.to_frame() if isinstance(y, pd.Series) else y
-        data = pd.concat([X, y], axis=1) if y is not None else X.copy()
-        data = data.to_frame() if isinstance(data, pd.Series) else data
-        if self.cols is None:
-            if y is not None:
-                self.sampling_strategy = self.convert_sampling_strategy(y)
-                self.sampler = self.sampler.set_params(sampling_strategy=self.sampling_strategy)
+        X = X.to_frame() if isinstance(X, pd.Series) else X
+        if y is not None:
+            sampling_strategy = self.convert_sampling_strategy(y)
+            if isinstance(sampling_strategy, float):
+                self.__cache_params = {'frac': sampling_strategy}
+                if 'replacement' in self.kwargs:
+                    self.__cache_params['replace'] = self.kwargs['replacement']
+            elif isinstance(sampling_strategy, int):
+                sampling_strategy = X.shape[0] if sampling_strategy > X.shape[0] else sampling_strategy
+                self.__cache_params = {'n': sampling_strategy}
+                if 'replacement' in self.kwargs:
+                    self.__cache_params['replace'] = self.kwargs['replacement']
+            else:
+                self.sampler = self.sampler.set_params(sampling_strategy=sampling_strategy)
                 self.sampler.fit(X, y)
-            else:
-                raise ValueError('y is None')
         else:
-            if self.cols in data.columns:
-                self.sampling_strategy = self.convert_sampling_strategy(
-                    data[self.cols].to_frame() if isinstance(data[self.cols], pd.Series) else data[self.cols])
-                self.sampler = self.sampler.set_params(sampling_strategy=self.sampling_strategy)
-                self.sampler.fit(data.drop(self.cols, axis=1), data[self.cols])
+            if isinstance(self.sampling_strategy, float):
+                self.__cache_params = {'frac': self.sampling_strategy}
+                if 'replacement' in self.kwargs:
+                    self.__cache_params['replace'] = self.kwargs['replacement']
+            elif isinstance(self.sampling_strategy, int):
+                self.sampling_strategy = X.shape[0] if self.sampling_strategy > X.shape[0] else self.sampling_strategy
+                self.__cache_params = {'n': self.sampling_strategy}
+                if 'replacement' in self.kwargs:
+                    self.__cache_params['replace'] = self.kwargs['replacement']
             else:
-                raise ValueError(f'{self.cols} not in data')
+                raise ValueError(f'sampling strategy:{self.sampling_strategy} is not valid cause no target')
         return self
 
     def transform(self, X, y=None):
         data = pd.concat([X, y], axis=1) if y is not None else X.copy()
         data = data.to_frame() if isinstance(data, pd.Series) else data
-        if self.cols is None:
+        if self.__cache_params is not None:
+            if 'random_state' in self.kwargs:
+                self.__cache_params['random_state'] = self.kwargs['random_state']
+            data = data.sample(**self.__cache_params)
             if y is not None:
-                X_resampled, y_resampled = self.sampler.fit_resample(X, y)
-                return X_resampled, y_resampled
+                return data.iloc[:, :-1], data.iloc[:, -1]
             else:
-                raise ValueError('y is None')
+                return data
+        if y is not None:
+            X_resampled, y_resampled = self.sampler.fit_resample(X, y)
+            return X_resampled, y_resampled
         else:
-            if self.cols in data.columns:
-                X_resampled, y_resampled = self.sampler.fit_resample(data.drop(self.cols, axis=1), data[self.cols])
-                X_resampled = pd.concat([X_resampled, y_resampled], axis=1)
-                gc.collect()
-                if y is None:
-                    return X_resampled
-                else:
-                    X_resampled, y_resampled = X_resampled[data.columns.tolist()[:-1]], X_resampled[
-                        data.columns.tolist()[-1]]
-                    del data
-                    gc.collect()
-                    return X_resampled, y_resampled
-            else:
-                raise ValueError(f'{self.cols} not in data')
+            raise ValueError('target is None')
 
     def fit_transform(self, X, y=None, **fit_params):
         self.fit(X, y)
         return self.transform(X, y)
+
+    def get_params(self, deep=True):
+        return self.sampler.get_params(deep=deep)
+
+    def clear(self):
+        self.__cache_params = None
+        gc.collect()
 
 
 class TypeTransfer(BaseEstimator, TransformerMixin):
