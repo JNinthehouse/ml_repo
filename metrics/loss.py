@@ -55,7 +55,7 @@ if __name__ == '__main__':
     import sklearn.metrics as mc
     import sklearn.neural_network as nn
     from feature_engineering.data_process import Scaler, Normalizer
-    from feature_engineering.PipeLine import PipeLine
+    from feature_engineering.Pipe import PipeLine
     import pandas as pd
     import matplotlib.pyplot as plt
 

@@ -1,7 +1,7 @@
 import numpy as np
 import sklearn.datasets as ds
 import pandas as pd
-from feature_engineering.PipeLine import PipeLine
+from feature_engineering.Pipe import PipeLine
 from feature_engineering.data_process import OverSampler, TypeTransfer
 import sklearn.model_selection as ms
 

@@ -3,11 +3,14 @@ import sklearn.feature_selection as fs
 from sklearn.base import BaseEstimator, TransformerMixin
 import pandas as pd
 import random
+import copy
 
 class CVSelector(BaseEstimator, TransformerMixin):
     def __init__(self, threshold=0.0):
         self.threshold = threshold
         self.__selector = fs.VarianceThreshold(threshold=self.threshold)
+        self.__fetures_names = None
+        self.__fetures_names_out = None
 
     @property
     def threshold(self):
@@ -20,24 +23,32 @@ class CVSelector(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
-        X_cv = (X.std() / X.mean()).values
-        self.__selector = self.__selector.fit(X)
-        self.__selector.variances_ = X_cv
-        self.cv = pd.Series(X_cv, index=X.columns, name='Coefficient of Variation')
+        cols = X.columns.tolist()
+        if len(cols) == 0:
+            return self
+        self.__selector.fit(X)
+        self.cv = pd.Series(self.__selector.variances_, index=X.columns, name='Variance')
+        self.__fetures_names = set(X.columns.tolist())
+        self.__fetures_names_out = set(self.__selector.get_feature_names_out())
         return self
 
     def transform(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
-        res = self.__selector.transform(X)
-        res = pd.DataFrame(res, columns=self.__selector.get_feature_names_out())
+        cols = X.columns.tolist()
+        if len(cols) == 0:
+            return X if y is None else (X, y)
+        assert set(X.columns.tolist()) == self.__fetures_names, 'columns must be same as fit'
+        res = X.loc[:, list(self.__fetures_names_out)]
         return (res, y) if y is not None else res
 
     def fit_transform(self, X, y=None, **fit_params):
-        model = self.fit(X, y)
-        return model.transform(X, y)
+        self.fit(X, y)
+        return self.transform(X, y)
 
     def clear(self):
         self.cv = None
+        self.__fetures_names = None
+        self.__fetures_names_out = None
         gc.collect()
 
 
@@ -49,12 +60,15 @@ class NASelector(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, y=None):
-        data = pd.concat([X.copy(), y.copy()], axis=1) if y is not None else X.copy()
+        data = X.copy()
         data = data.to_frame() if isinstance(data, pd.Series) else data
+        cols = data.columns.tolist()
+        if len(cols) == 0:
+            return data if y is None else (data.iloc[:, :-1], data.iloc[:, -1])
         self.threshold_feature = 1 - self.threshold if self.threshold else 1
         data = data.dropna(axis=1, thresh=self.threshold_feature * data.shape[0])
         if y is not None:
-            return data.iloc[:, :-1], data.iloc[:, -1]
+            return data, y
         else:
             return data
 
@@ -95,25 +109,34 @@ class MatualInfoSelector(BaseEstimator, TransformerMixin):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
         y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
         cols = list(X.columns)
+        if len(cols) == 0:
+            return pd.DataFrame(columns=cols, index=['feature_importances_'])
         self.discrete_features_index = self.discrete_features
         if self.discrete_features not in ('auto', True, False):
             if isinstance(self.discrete_features, list):
                 self.discrete_features_index = [cols.index(i) for i in self.discrete_features]
             else:
                 raise ValueError('discrete_features must be auto, True, False or list')
-        self.__score = self.__estimator(X, y, discrete_features=self.discrete_features_index,
+        __score = self.__estimator(X, y, discrete_features=self.discrete_features_index,
                                         n_neighbors=self.n_nerighbors, random_state=1, *self.args, **self.kwargs)
-        self.score = pd.DataFrame(self.__score.reshape(1, -1), columns=cols, index=['feature_importances_'])
-        return self.score
+        score = pd.DataFrame(__score.reshape(1, -1), columns=cols, index=['feature_importances_'])
+        return score
 
     def fit(self, X, y):
         random.seed(self.random_state)
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+        if len(X.columns.tolist()) == 0:
+            return self
         res = [self.__fit(X, y) for _ in range(self.num_epochs)]
         self.score = pd.concat(res, axis=0).mean(axis=0)
         return self
 
     def transform(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        cols = X.columns.tolist()
+        if len(cols) == 0:
+            return X if y is None else (X, y)
         if 0 <= self.threshold <= 1:
             mask = (self.score > self.threshold).values.ravel()
             return (X.iloc[:, mask], y) if y is None else X.iloc[:, mask]
@@ -144,25 +167,34 @@ class CategorySelector(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        X_cols = X.columns.tolist()
+        if len(X_cols) == 0:
+            return self
         X_nunique = X.nunique()
-        self.info = pd.concat([X_nunique, X.dtypes], axis=1).reset_index()
-        self.info.columns = ['colnames', 'n_unique', 'dtypes']
+        self.info = pd.concat([X_nunique, X.dtypes], axis=1)
+        self.info.columns = ['n_unique', 'dtypes']
+        self.info['dtypes'] = self.info['dtypes'].apply(lambda x: x.name)
         if 0 <= self.threshold < 1:
             self.category_cols = X_nunique.loc[X_nunique <= self.threshold * X.shape[0]].index.tolist()
         elif self.threshold >= 1 and int(self.threshold) == self.threshold:
             self.category_cols = X_nunique.loc[X_nunique <= self.threshold].index.tolist()
         else:
             raise ValueError
+        res_cat_cols = self.info.loc[self.info['dtypes'].isin(['category', 'object'])].index.tolist()
+        self.category_cols = list(set(self.category_cols) | set(res_cat_cols))
         return self
 
     def transform(self, X, y=None):
+        assert self.info is not None, 'please fit first'
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
         X_cols = X.columns.tolist()
-        cate_cols = list(set(X_cols) & set(self.category_cols))
+        if len(X_cols) == 0:
+            return X if y is None else (X, y)
+        assert set(X_cols) >= set(self.info.index.tolist()), 'X columns must contain all fitted category columns'
         if not self.drop:
-            X_cate = X[cate_cols].astype('category')
+            X_cate = X[self.category_cols].astype(str)
         else:
-            X_cate = X.drop(cate_cols, axis=1)
+            X_cate = X.drop(self.category_cols, axis=1)
         X_cate = X_cate.to_frame() if isinstance(X_cate, pd.Series) else X_cate
         return (X_cate, y) if y is not None else X_cate
 
@@ -192,6 +224,8 @@ class MICSelector(BaseEstimator, TransformerMixin):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
         X_cols = X.columns.tolist()
         self.score = pd.Series(index=X_cols, name='MIC score')
+        if len(X_cols) == 0:
+            return self
         try:
             for cols in X_cols:
                 self.model.compute_score(X[cols].values, y.values.ravel())
@@ -203,6 +237,9 @@ class MICSelector(BaseEstimator, TransformerMixin):
 
     def transform(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        X_cols = X.columns.tolist()
+        if len(X_cols) == 0:
+            return X if y is None else (X, y)
         if self.score is None:
             raise ValueError('score is None, please fit first')
         if 0 <= self.threshold <= 1:
@@ -255,6 +292,8 @@ class DcorSelector(BaseEstimator, TransformerMixin):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
         y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
         X_cols = X.columns.tolist()
+        if len(X_cols) == 0:
+            return self
         self.score = pd.Series(index=X_cols, name='DCOR score')
         try:
             for cols in X_cols:
@@ -266,6 +305,9 @@ class DcorSelector(BaseEstimator, TransformerMixin):
 
     def transform(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        X_cols = X.columns.tolist()
+        if len(X_cols) == 0:
+            return X if y is None else (X, y)
         if self.score is None:
             raise ValueError('score is None, please fit first')
         if 0 <= self.threshold <= 1:
@@ -281,4 +323,63 @@ class DcorSelector(BaseEstimator, TransformerMixin):
 
     def clear(self):
         self.score = None
+        gc.collect()
+
+
+class ColumnSelector(BaseEstimator, TransformerMixin):
+    def __init__(self, cols=None, remain_y=True):
+        self.cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
+        self.remain_y = remain_y
+        self.__is_fitted = False
+
+    def fit(self, X, y=None):
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        X_cols = X.columns.tolist()
+        if len(X_cols) == 0:
+            return self
+        self.cols = X.columns.tolist() if self.cols is None else self.cols
+        if y is not None:
+            y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+            all_cols = X.columns.tolist() + y.columns.tolist()
+            if set(self.cols) <= set(all_cols):
+                self.__is_fitted = True
+                return self
+            else:
+                raise ValueError('cols must be in X and y')
+        else:
+            all_cols = X.columns.tolist()
+            if set(self.cols) <= set(all_cols):
+                self.__is_fitted = True
+                return self
+            else:
+                raise ValueError('cols must be in X')
+
+    def transform(self, X, y=None):
+        if not self.__is_fitted:
+            raise ValueError('please fit first')
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        X_cols = X.columns.tolist()
+        if len(X_cols) == 0:
+            return X if y is None else (X, y)
+        if y is not None:
+            y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+            all_cols = X.columns.tolist() + y.columns.tolist()
+            assert set(self.cols) <= set(all_cols), 'cols must be in X and y'
+            y_cols = list(set(y.columns.tolist()) & set(self.cols))
+            if len(y_cols) != 0:
+                cols = list(set(self.cols) - set(y.columns.tolist()))
+                return X.loc[:, cols], y[y_cols]
+            else:
+                return X.loc[:, self.cols] if not self.remain_y else (X.loc[:, self.cols], y)
+        else:
+            all_cols = X.columns.tolist()
+            assert set(self.cols) <= set(all_cols), 'cols must be in X'
+            return X.loc[:, self.cols]
+
+    def fit_transform(self, X, y=None, **fit_params):
+        self.fit(X, y)
+        return self.transform(X, y)
+
+    def clear(self):
+        self.__is_fitted = False
         gc.collect()

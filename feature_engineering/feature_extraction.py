@@ -3,7 +3,7 @@ import numpy as np
 import openfe
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
-
+import copy
 
 class FeatureBoostingGenerator(BaseEstimator, TransformerMixin):
     def __init__(self,
@@ -46,6 +46,14 @@ class FeatureBoostingGenerator(BaseEstimator, TransformerMixin):
         self.candidate_features = openfe.get_candidate_features(numerical_features=self.num_features,
                                                                 categorical_features=self.cat_features,
                                                                 ordinal_features=self.ord_features)
+        X_cols = X.columns.tolist()
+        if len(X_cols) == 0:
+            return self
+        target_cols = []
+        target_cols = target_cols + self.num_features if self.num_features is not None else target_cols
+        target_cols = target_cols + self.cat_features if self.cat_features is not None else target_cols
+        target_cols = target_cols + self.ord_features if self.ord_features is not None else target_cols
+        assert set(target_cols) <= set(X_cols), 'target_cols must be subset of X.columns'
         self.new_features = self._generator.fit(data=X,
                                                 label=y,
                                                 task=self.task,
@@ -61,6 +69,11 @@ class FeatureBoostingGenerator(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, y=None):
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+        X_cols = X.columns.tolist()
+        if len(X_cols) == 0:
+            return X if y is None else (X, y)
         data, _ = self._generator.transform(X, X, self.new_features, n_jobs=self.n_jobs)
         if len(self.new_features) != 0:
             X = data.iloc[:, :-len(self.new_features)]
@@ -116,12 +129,12 @@ class CatBoostEncoder(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+        X_cols = X.columns.tolist()
+        if len(X_cols) == 0:
+            return self
         if self.cols is None or len(self.cols) == 0:
             self.cols = X.columns.tolist()
-        try:
-            X[self.cols] = X[self.cols].astype('category')
-        except:
-            raise ValueError('CatBoostEncoder only support categorical features')
         self._ce.fit(X[self.cols], y)
         return self
 
@@ -141,7 +154,11 @@ class CatBoostEncoder(BaseEstimator, TransformerMixin):
 
     def transform(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
-        X[self.cols] = X[self.cols].astype('category')
+        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+        X_cols = X.columns.tolist()
+        if len(X_cols) == 0:
+            return X if y is None else (X, y)
+        X[self.cols] = X[self.cols].astype(float)
         X[self.cols] = self._ce.transform(X[self.cols])
         return (X, y) if y is not None else X
 
@@ -172,13 +189,13 @@ class OrdinaryEncoder(BaseEstimator, TransformerMixin):
                       min_frequency=self.min_frequency)
 
     def fit(self, X, y=None):
-        data = X.to_frame() if isinstance(X, pd.Series) else X.copy()
-        if y is not None:
-            y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
-            data = pd.concat([data, y], axis=1)
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
         if self.cols is None:
-            self.cols = data.columns.tolist()
-        self._oe.fit(data[self.cols].values.reshape(-1, len(self.cols)))
+            self.cols = X.columns.tolist()
+        if len(X.columns.tolist()) == 0:
+            return self
+        self._oe.fit(X[self.cols].values.reshape(-1, len(self.cols)))
         return self
 
     def clear(self):
@@ -186,21 +203,21 @@ class OrdinaryEncoder(BaseEstimator, TransformerMixin):
         gc.collect()
 
     def transform(self, X, y=None):
-        data = X.to_frame() if isinstance(X, pd.Series) else X.copy()
-        if y is not None:
-            y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
-            data = pd.concat([data, y], axis=1)
-        data[self.cols] = self._oe.transform(data[self.cols].values.reshape(-1, len(self.cols)))
-        data[self.cols] = data[self.cols].astype('category')
-        return (data.iloc[:, :-1], data.iloc[:, -1]) if y is not None else data
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+        if X.shape[1] == 0:
+            return X if y is None else (X, y)
+        X[self.cols] = self._oe.transform(X[self.cols].values.reshape(-1, len(self.cols)))
+        X[self.cols] = X[self.cols].astype(float)
+        return (X, y) if y is not None else X
 
     def inverse_transform(self, X, y=None):
-        data = X.to_frame() if isinstance(X, pd.Series) else X.copy()
-        if y is not None:
-            y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
-            data = pd.concat([data, y], axis=1)
-        data[self.cols] = self._oe.inverse_transform(data[self.cols].values.reshape(-1, len(self.cols)))
-        return (data.iloc[:, :-1], data.iloc[:, -1]) if y is not None else data
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+        if X.shape[1] == 0:
+            return X if y is None else (X, y)
+        X[self.cols] = self._oe.inverse_transform(X[self.cols].values.reshape(-1, len(self.cols)))
+        return (X, y) if y is not None else X
 
     def fit_transform(self, X, y=None, **fit_params):
         self.fit(X, y)
@@ -245,38 +262,38 @@ class CountEncoder(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y=None):
         data = X.to_frame() if isinstance(X, pd.Series) else X.copy()
-        if y is not None:
-            y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
-            data = pd.concat([data, y], axis=1)
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        if X.shape[1] == 0:
+            return self
         if self.cols is None:
-            self.cols = data.columns.tolist()
-        self._ce.fit(data[self.cols].astype('category'))
+            self.cols = X.columns.tolist()
+        self._ce.fit(X[self.cols].astype(str))
         self._mapping = self._ce.mapping
         return self
 
     def transform(self, X, y=None):
-        data = X.to_frame() if isinstance(X, pd.Series) else X.copy()
-        if y is not None:
-            y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
-            data = pd.concat([data, y], axis=1)
-        data[self.cols] = self._ce.transform(data[self.cols])
-        data[self.cols] = data[self.cols].astype('category')
-        return (data.iloc[:, :-1], data.iloc[:, -1]) if y is not None else data
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+        if X.shape[1] == 0:
+            return X if y is None else (X, y)
+        X[self.cols] = self._ce.transform(X[self.cols])
+        X[self.cols] = X[self.cols].astype(float)
+        return (X, y) if y is not None else X
 
     def fit_transform(self, X, y=None, **fit_params):
         self.fit(X, y)
         return self.transform(X, y)
 
     def inverse_transform(self, X, y=None):
-        data = X.to_frame() if isinstance(X, pd.Series) else X.copy()
-        if y is not None:
-            y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
-            data = pd.concat([data, y], axis=1)
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+        if X.shape[1] == 0:
+            return X if y is None else (X, y)
         for key, value in self._mapping.items():
             value = value.to_dict()
             value = {v: k for k, v in value.items()}
-            data[key] = data[key].map(value)
-        return (data.iloc[:, :-1], data.iloc[:, -1]) if y is not None else data
+            X[key] = X[key].map(value)
+        return (X, y) if y is not None else X
 
 
 class OneHotEncoder(BaseEstimator, TransformerMixin):
@@ -309,11 +326,9 @@ class OneHotEncoder(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y=None):
         data = X.to_frame() if isinstance(X, pd.Series) else X.copy()
-        if y is not None:
-            y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
-            data = pd.concat([data, y], axis=1)
-        if self.cols is None:
-            self.cols = data.columns.tolist() if y is None else data.columns.tolist()[:-1]
+        self.cols = data.columns.tolist() if self.cols is None else self.cols
+        if data.shape[1] == 0:
+            return self
         self._ohe.fit(data[self.cols].astype('category'))
         self._mapping = self._ohe.mapping
         return self
@@ -321,6 +336,8 @@ class OneHotEncoder(BaseEstimator, TransformerMixin):
     def transform(self, X, y=None):
         data = X.to_frame() if isinstance(X, pd.Series) else X.copy()
         cur_cols = data.columns.tolist()
+        if len(cur_cols) == 0:
+            return data if y is None else (data, y)
         res_cols = list(set(cur_cols) - set(self.cols))
         data_encoded = self._ohe.transform(data[self.cols])
         self.transformed_cols = data_encoded.columns.tolist()
@@ -335,6 +352,8 @@ class OneHotEncoder(BaseEstimator, TransformerMixin):
     def inverse_transform(self, X, y=None):
         data = X.to_frame() if isinstance(X, pd.Series) else X.copy()
         cur_cols = data.columns.tolist()
+        if len(cur_cols) == 0:
+            return data if y is None else (data, y)
         res_cols = list(set(cur_cols) - set(self.transformed_cols))
         data_encoded = self._ohe.inverse_transform(data[self.transformed_cols])
         if len(res_cols) > 0:
@@ -381,6 +400,9 @@ class WOEEncoder(BaseEstimator, TransformerMixin):
         self.__we.cols = cols
 
     def fit(self, X, y):
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        if len(X.columns.tolist()) == 0:
+            return self
         y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
         y_value_counts = y.iloc[:, 0].value_counts()
         if len(y_value_counts) != 2:
@@ -401,9 +423,114 @@ class WOEEncoder(BaseEstimator, TransformerMixin):
 
     def transform(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        if len(X.columns.tolist()) == 0:
+            return X if y is None else (X, y)
         X[self.cols] = self.__we.transform(X[self.cols])
         return (X, y) if y is not None else X
 
     def fit_transform(self, X, y=None, **fit_params):
         self.fit(X, y)
         return self.transform(X, y)
+
+    def clear(self):
+        gc.collect()
+
+
+class PCAGenerator(BaseEstimator, TransformerMixin):
+    def __init__(self, cols=None, n_components=10, random_state=1, kernel='linear', gamma=None, degree=3, coef0=1,
+                 n_jobs=-1):
+        assert kernel in ['linear', 'poly', 'rbf', 'sigmoid', 'cosine',
+                          'precomputed'], 'kernel must be one of linear, poly, rbf, sigmoid, cosine, precomputed'
+        from sklearn.decomposition import KernelPCA
+        self.__estimator = KernelPCA(n_components=None,
+                                     random_state=random_state,
+                                     kernel=kernel,
+                                     gamma=gamma,
+                                     degree=degree,
+                                     coef0=coef0,
+                                     n_jobs=n_jobs)
+        self.cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
+        self.n_components = n_components
+        self.var_ratio = None
+
+    def fit(self, X, y=None):
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        if self.cols is None:
+            self.cols = X.columns.tolist()
+        if len(X.columns.tolist()) == 0:
+            return self
+        self.__estimator.fit(X[self.cols])
+        self.var_ratio = self.__estimator.eigenvalues_ / self.__estimator.eigenvalues_.sum()
+        self.var_ratio = pd.Series(data=self.var_ratio, index=self.__estimator.get_feature_names_out().tolist(),
+                                   name='exp_var_ratio')
+        return self
+
+    def transform(self, X, y=None):
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        if len(X.columns.tolist()) == 0:
+            return X if y is None else (X, y)
+        y = y.to_frame() if isinstance(y, pd.Series) else copy.copy(y)
+        assert set(self.cols) <= set(X.columns.tolist()), 'cols must be subset of X.columns'
+        not_fitted_cols = list(set(X.columns.tolist()) - set(self.cols))
+        res = self.__estimator.transform(X[self.cols])
+        res = pd.DataFrame(res)
+        res = res.iloc[:, :self.n_components]
+        res.columns = self.var_ratio.index.tolist()[:self.n_components]
+        X = pd.concat([X[not_fitted_cols], res], axis=1)
+        return (X, y) if y is not None else X
+
+    def fit_transform(self, X, y=None, **fit_params):
+        self.fit(X, y)
+        return self.transform(X, y)
+
+    def clear(self):
+        self.var_ratio = None
+        gc.collect()
+
+    @property
+    def random_state(self):
+        return self.__estimator.random_state
+
+    @random_state.setter
+    def random_state(self, random_state):
+        self.__estimator.random_state = random_state
+
+    @property
+    def kernel(self):
+        return self.__estimator.kernel
+
+    @kernel.setter
+    def kernel(self, kernel):
+        self.__estimator.kernel = kernel
+
+    @property
+    def gamma(self):
+        return self.__estimator.gamma
+
+    @gamma.setter
+    def gamma(self, gamma):
+        self.__estimator.gamma = gamma
+
+    @property
+    def degree(self):
+        return self.__estimator.degree
+
+    @degree.setter
+    def degree(self, degree):
+        self.__estimator.degree = degree
+
+    @property
+    def coef0(self):
+        return self.__estimator.coef0
+
+    @coef0.setter
+    def coef0(self, coef0):
+        self.__estimator.coef0 = coef0
+
+    @property
+    def n_jobs(self):
+        return self.__estimator.n_jobs
+
+    @n_jobs.setter
+    def n_jobs(self, n_jobs):
+        self.__estimator.n_jobs = n_jobs
