@@ -41,7 +41,7 @@ class FeatureImportances:
         import shap
         explainer = shap.TreeExplainer(self.model) if model_type == 'tree' else shap.KernelExplainer(self.model.predict,
                                                                                                      self.X)
-        shap_values = explainer.shap_values(self.X)[1]
+        shap_values = explainer.shap_values(self.X)[0]
         shap_values = pd.DataFrame(shap_values, columns=self.X.columns) if isinstance(self.X,
                                                                                       pd.DataFrame) else shap_values
         if return_mean:
@@ -82,21 +82,3 @@ class FeatureImportances:
         report = pd.concat([default, permutation, shap, null], axis=1)
         report.columns = ['default', 'permutation', 'shap', 'null']
         return report
-
-if __name__ == '__main__':
-    import sklearn.neighbors as sn
-    import numpy as np
-    import sklearn.model_selection as sm
-    import sklearn.metrics as met
-    import sklearn.datasets as ds
-
-    kd = sn.KernelDensity(kernel='gaussian')
-    bandwidths = np.arange(0.1, 3, 0.01)
-    kfold = sm.StratifiedKFold(n_splits=5, shuffle=True)
-    data = ds.load_iris(as_frame=True)
-    X = data.data
-    y = data.target
-
-    grid1 = sm.GridSearchCV(kd, {'bandwidth': bandwidths}, cv=sm.LeaveOneOut())
-    grid1.fit(X.iloc[:, 0].values[:, None])
-    print(grid1.best_params_)

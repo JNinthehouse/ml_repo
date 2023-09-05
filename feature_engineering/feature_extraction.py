@@ -4,6 +4,7 @@ import openfe
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 import copy
+import sklearn.manifold as smd
 
 class FeatureBoostingGenerator(BaseEstimator, TransformerMixin):
     def __init__(self,
