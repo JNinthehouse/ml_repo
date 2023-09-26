@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 
 class FeatureImportances:
@@ -39,15 +40,23 @@ class FeatureImportances:
 
     def shap_value(self, model_type='tree', sorted=False, return_mean=True):
         import shap
-        explainer = shap.TreeExplainer(self.model) if model_type == 'tree' else shap.KernelExplainer(self.model.predict,
-                                                                                                     self.X)
-        shap_values = explainer.shap_values(self.X)[0]
-        shap_values = pd.DataFrame(shap_values, columns=self.X.columns) if isinstance(self.X,
-                                                                                      pd.DataFrame) else shap_values
-        if return_mean:
-            shap_values = shap_values.abs().mean(axis=0)
+        try:
+            explainer = shap.TreeExplainer(self.model)
+        except:
+            explainer = shap.KernelExplainer(self.model.predict,
+                                             self.X)
+        shap_values = explainer.shap_values(self.X)[1]
+        if len(shap_values.shape) == 1:
+            shap_values = pd.Series(data=shap_values, index=self.X.columns.tolist()).abs()
             if sorted:
                 shap_values = shap_values.sort_values(ascending=False)
+        else:
+            shap_values = pd.DataFrame(shap_values, columns=self.X.columns) if isinstance(self.X,
+                                                                                          pd.DataFrame) else shap_values
+            if return_mean:
+                shap_values = shap_values.abs().mean(axis=0)
+                if sorted:
+                    shap_values = shap_values.sort_values(ascending=False)
         return shap_values / shap_values.sum()
 
     def null_importances(self, n_repeats=100, random_state=1, quantile=0.75, sorted=False):

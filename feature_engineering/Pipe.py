@@ -1,11 +1,12 @@
-from typing import Callable, Any
+from typing import Callable, Any, List, Tuple, Union
 import pandas as pd
 import numpy as np
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.pipeline import FeatureUnion, make_union
 
 class PipeLine(Pipeline):
-    def __init__(self, steps=None, memory=None, verbose=False):
+    def __init__(self, steps: Union[List[Tuple[str, Any]], List[Any]] = None,
+                 memory=None, verbose: bool = False):
         """
 
         :rtype: object
@@ -212,7 +213,7 @@ class PipeUnion(FeatureUnion):
                          verbose=verbose, transformer_weights=transformer_weights)
 
     def fit(self, X, y=None, **fit_params):
-        from sklearn.utils.parallel import Parallel, delayed
+        from sklearn.utils._joblib import Parallel, delayed
         from multiprocessing import cpu_count
         match self.n_jobs:
             case None:
@@ -230,7 +231,7 @@ class PipeUnion(FeatureUnion):
         return self
 
     def _transform(self, X, y=None, transform_type='transform', **fit_params):
-        from sklearn.utils.parallel import Parallel, delayed
+        from sklearn.utils._joblib import Parallel, delayed
         from multiprocessing import cpu_count
         match self.n_jobs:
             case None:
@@ -353,6 +354,19 @@ class PipeUnion(FeatureUnion):
             self.transformer_list = make_union(*lists).transformer_list
         else:
             raise ValueError('the input must be PipeUnion')
+
+
+def MixTransform(estimator_class):
+    from sklearn.base import TransformerMixin
+    class MixedEstimator(estimator_class, TransformerMixin):
+        def transform(self, X, *args, **kwargs):
+            # 这里你可以根据需要定义具体的 transform 方法
+            if hasattr(self, 'predict'):
+                return pd.Series(self.predict(X))
+            else:
+                return X
+
+    return MixedEstimator
 
 
 if __name__ == '__main__':

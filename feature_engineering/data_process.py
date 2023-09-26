@@ -46,7 +46,7 @@ class DetectOutlier(BaseEstimator, TransformerMixin):
         assert set(self.cols) <= set(cols), 'The target columns is not in the columns of data'
         if len(cols) == 0:
             return data if y is None else (data, y)
-        if set(cols) != set(self.__cache.columns):
+        if not (set(cols) <= set(self.__cache.columns)):
             raise ValueError('The columns of X is not equal to the columns of fitted data')
 
         # 处理方法生成mask
@@ -75,7 +75,7 @@ class DetectOutlier(BaseEstimator, TransformerMixin):
                 data.columns = ['is_outlier'] + list(X.columns)
             case 'drop':
                 data = data.loc[~self.mask]
-                y = y.loc[~self.mask]
+                y = y.loc[~self.mask] if y is not None else None
             case 'nan':
                 data.loc[self.mask] = np.nan
         return data if y is None else (data, y)
@@ -91,20 +91,34 @@ class DetectOutlier(BaseEstimator, TransformerMixin):
 
 
 class FillNA(BaseEstimator, TransformerMixin):
-    def __init__(self, cols=None, by=None, method='mean'):
+    def __init__(self, cols=None, by=None, method='mean', **kwargs):
+        # method : 'mean' | 'median' | 'mode' | 'constant' | model
+        assert self.__check_method(method), 'method must be mean, median, mode, constant or model'
         cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
         self.cols = cols
         self.by = by
         self.method = method
+        self.__estimator = None
+        self.kwargs = kwargs
+
+    def __check_method(self, method):
+        if method in ['mean', 'median', 'mode', 'constant', 'model']:
+            return True
+        else:
+            return False
 
     def fit(self, X, y=None):
+        from sklearn.linear_model import LinearRegression
+        if self.method == 'model':
+            self.__estimator = self.kwargs.get('estimator', LinearRegression())
+            self.__estimator = self.__estimator.fit(X, y)
         return self
 
     def transform(self, X, y=None):
         cols = self.cols if self.cols else list(X.columns)
         if len(cols) == 0:
             return X if y is None else (X, y)
-        data = pd.concat([X.copy(), y.copy()], axis=1) if y is not None else X.copy()
+        data = X.copy()
         data = data.to_frame() if isinstance(data, pd.Series) else data
 
         if self.method == 'mean':
@@ -117,11 +131,26 @@ class FillNA(BaseEstimator, TransformerMixin):
         elif self.method == 'mode':
             data[cols] = data[cols].fillna(data[cols].mode().loc[0]) if self.by is None else data.groupby(self.by)[
                 cols].transform(lambda x: x.fillna(x.mode().loc[0]))
+        elif self.method == 'constant':
+            value = self.kwargs.get('value', 0)
+            data[cols] = data[cols].fillna(value) if self.by is None else data.groupby(self.by)[
+                cols].transform(lambda x: x.fillna(value))
+        elif self.method == 'model':
+            if self.__estimator is not None:
+                from sklearn.experimental import enable_iterative_imputer
+                from sklearn.impute import IterativeImputer
+                model = IterativeImputer(estimator=self.__estimator, **self.kwargs)
+                all_cols = data.columns.tolist()
+                data = model.fit_transform(data)
+                data = pd.DataFrame(data, columns=all_cols)
+            else:
+                raise ValueError('estimator is None')
         else:
             raise NotImplementedError
 
         if y is not None:
-            if y.isnull().any():
+            y = y.to_frame() if isinstance(y, pd.Series) else y
+            if y.isnull().any().iloc[0]:
                 raise ValueError('target still has missing values')
             else:
                 return data.iloc[:, :-1], data.iloc[:, -1]
@@ -338,8 +367,6 @@ class OverSampler(BaseEstimator, TransformerMixin):
             self.sampling_strategy = self.kwargs.pop('sampling_strategy')
         else:
             self.sampling_strategy = 'auto'
-        if 'shrinkage' not in self.kwargs:
-            self.kwargs['shrinkage'] = 0
         if self.method == 'random':
             from imblearn.over_sampling import RandomOverSampler
             self.sampler = RandomOverSampler(**self.kwargs)
@@ -384,6 +411,7 @@ class OverSampler(BaseEstimator, TransformerMixin):
         self.clear()
         if self.method == 'random':
             if y is not None:
+                y = y.to_frame() if isinstance(y, pd.Series) else y
                 sampling_strategy = self.convert_sampling_strategy(y)
                 if isinstance(sampling_strategy, float):
                     self.__cache_params = {'frac': sampling_strategy - 1}
@@ -583,6 +611,7 @@ class TypeTransfer(BaseEstimator, TransformerMixin):
         return self
 
     def _transform(self, X):
+        X = X.to_frame() if isinstance(X, pd.Series) else X
         x_type = X.__class__.__name__.lower()
         x_type = 'array' if x_type == 'ndarray' else x_type
         assert x_type in ['array', 'dataframe']
@@ -633,156 +662,3 @@ class TypeTransfer(BaseEstimator, TransformerMixin):
     def clear(self):
         gc.collect()
 
-
-class BaseProcess(BaseEstimator, TransformerMixin):
-    def __init__(self, cols=None, apply_y=False):
-        cols = [cols] if (not isinstance(cols, list)) and (cols is not None) else cols
-        self.cols = cols
-        self.apply_y = apply_y
-
-    def _fit(self, X, y=None):
-        return self
-
-    def _transform(self, X, y=None):
-        pass
-
-    def __inspect_params(self, func):
-        import inspect
-        params = inspect.signature(func).parameters
-        names = list(params.keys())
-        return names
-
-    def __cols_check(self, X, y=None):
-        X = X.to_frame() if isinstance(X, pd.Series) else X
-        y = y.to_frame() if isinstance(y, pd.Series) else y
-        if y is not None:
-            if self.apply_y:
-                self.cols = X.columns.tolist() + y.columns.tolist() if self.cols is None else self.cols
-            else:
-                self.cols = X.columns.tolist() if self.cols is None else self.cols
-        else:
-            self.cols = X.columns.tolist() if self.cols is None else self.cols
-
-    def fit(self, X, y=None):
-        self.__fit_accept_params = self.__inspect_params(self._fit)
-        if len(self.__fit_accept_params) == 1:
-            X = X.to_frame() if isinstance(X, pd.Series) else X
-            X_cols = list(X.columns)
-            if len(X_cols) == 0:
-                return self
-            self.__cols_check(X, y)
-            assert set(self.cols) <= set(X_cols), 'The target columns is not in the columns of data'
-            self._fit(X[self.cols])
-            return self
-        elif len(self.__fit_accept_params) == 2:
-            if not self.apply_y:
-                X = X.to_frame() if isinstance(X, pd.Series) else X
-                y = y.to_frame() if isinstance(y, pd.Series) else y
-                cols = list(X.columns)
-                if len(cols) == 0:
-                    return self
-                self.__cols_check(X, y)
-                assert set(self.cols) <= set(cols), 'The target columns is not in the columns of data'
-                self._fit(X[self.cols], y)
-                return self
-            else:
-                X = X.to_frame() if isinstance(X, pd.Series) else X
-                y = y.to_frame() if isinstance(y, pd.Series) else y
-                if y is not None:
-                    data = pd.concat([X.copy(), y.copy()], axis=1)
-                else:
-                    data = X.copy()
-                cols = list(data.columns)
-                if len(cols) == 0:
-                    return self
-                self.__cols_check(X, y)
-                assert set(self.cols) <= set(cols), 'The target columns is not in the columns of data'
-                self._fit(data[self.cols])
-                return self
-        else:
-            raise ValueError("The method '_fit' can only accept one or two parameters")
-
-    def __check_data_len(self, x1, x2):
-        index1 = x1.index
-        index2 = x2.index
-        if len(index1) <= len(index2):
-            return x1, x2.loc[index1]
-        else:
-            return x1.loc[index2], x2
-
-    def transform(self, X, y=None):
-        self.__transform_accept_params = self.__inspect_params(self._transform)
-        if len(self.__transform_accept_params) == 1:
-            X = X.to_frame() if isinstance(X, pd.Series) else X
-            X_cols = list(X.columns)
-            if len(X_cols) == 0:
-                return X
-            self.__cols_check(X, y)
-            assert set(self.cols) <= set(X_cols), 'The target columns is not in the columns of data'
-            X_res = X.drop(self.cols, axis=1)
-            X_res = pd.concat([X_res, self._transform(X[self.cols])], axis=1)
-            if y is None:
-                return X_res
-            else:
-                X_res, y = self.__check_data_len(X_res, y)
-                return (X_res, y)
-        elif len(self.__transform_accept_params) == 2:
-            if not self.apply_y:
-                X = X.to_frame() if isinstance(X, pd.Series) else X
-                y = y.to_frame() if isinstance(y, pd.Series) else y
-                cols = list(X.columns)
-                if len(cols) == 0:
-                    return X
-                self.__cols_check(X, y)
-                assert set(self.cols) <= set(cols), 'The target columns is not in the columns of data'
-                X_res = X.drop(self.cols, axis=1)
-                X_processed = self._transform(X[self.cols], y)
-                if isinstance(X_processed, tuple):
-                    X_processed, y = X_processed
-                X_res, X_processed = self.__check_data_len(X_res, X_processed)
-                X_res = pd.concat([X_res, X_processed], axis=1)
-                del X_processed
-                if y is None:
-                    return X_res
-                else:
-                    X_res, y = self.__check_data_len(X_res, y)
-                    return (X_res, y)
-            else:
-                X = X.to_frame() if isinstance(X, pd.Series) else X
-                y = y.to_frame() if isinstance(y, pd.Series) else y
-                if y is not None:
-                    data = pd.concat([X.copy(), y.copy()], axis=1)
-                else:
-                    data = X.copy()
-                cols = list(data.columns)
-                if len(cols) == 0:
-                    return data
-                self.__cols_check(X, y)
-                assert set(self.cols) <= set(cols), 'The target columns is not in the columns of data'
-                x_cols = list(set(cols) & set(X.columns))
-                y_cols = list(set(cols) & set(y.columns))
-                X_res = X.drop(x_cols, axis=1)
-                X_processed = self._transform(data[x_cols])
-                X_res, X_processed = self.__check_data_len(X_res, X_processed)
-                X_res = pd.concat([X_res, X_processed], axis=1)
-                del X_processed
-                y_res = y.drop(y_cols, axis=1)
-                y_processed = self._transform(data[y_cols])
-                y_res, y_processed = self.__check_data_len(y_res, y_processed)
-                y_res = pd.concat([y_res, y_processed], axis=1)
-                del y_processed
-                X_res, y_res = self.__check_data_len(X_res, y_res)
-                y_res = None if y_res.shape[1] == 0 else y_res
-                if y is None:
-                    return X_res
-                else:
-                    return (X_res, y_res) if y_res is not None else (X_res, y)
-        else:
-            raise ValueError("The method '_transform' can only accept one or two parameters")
-
-    def fit_transform(self, X, y=None, **fit_params):
-        self.fit(X, y)
-        return self.transform(X, y)
-
-    def clear(self):
-        gc.collect()

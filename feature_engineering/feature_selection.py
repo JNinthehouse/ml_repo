@@ -1,14 +1,16 @@
 import gc
+import numpy as np
+
 import sklearn.feature_selection as fs
 from sklearn.base import BaseEstimator, TransformerMixin
 import pandas as pd
 import random
 import copy
+from model.unsupervised import HDBSCAN
 
 class CVSelector(BaseEstimator, TransformerMixin):
     def __init__(self, threshold=0.0):
         self.threshold = threshold
-        self.__selector = fs.VarianceThreshold(threshold=self.threshold)
         self.__fetures_names = None
         self.__fetures_names_out = None
 
@@ -19,17 +21,15 @@ class CVSelector(BaseEstimator, TransformerMixin):
     @threshold.setter
     def threshold(self, threshold):
         self.__threshold = threshold
-        self.__selector = fs.VarianceThreshold(threshold=self.threshold)
 
     def fit(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
         cols = X.columns.tolist()
         if len(cols) == 0:
             return self
-        self.__selector.fit(X)
-        self.cv = pd.Series(self.__selector.variances_, index=X.columns, name='Variance')
+        self.cv = (X.std() / X.mean()).abs()
         self.__fetures_names = set(X.columns.tolist())
-        self.__fetures_names_out = set(self.__selector.get_feature_names_out())
+        self.__fetures_names_out = set(self.cv.loc[self.cv > self.threshold].index.tolist())
         return self
 
     def transform(self, X, y=None):
@@ -244,10 +244,10 @@ class MICSelector(BaseEstimator, TransformerMixin):
             raise ValueError('score is None, please fit first')
         if 0 <= self.threshold <= 1:
             mask = self.score.loc[self.score > self.threshold].index.tolist()
-            return (X.loc[:, mask], y) if y is None else X.loc[:, mask]
+            return (X.loc[:, mask], y) if y is not None else X.loc[:, mask]
         elif self.threshold in range(1, X.shape[1] + 1):
             mask = self.score.sort_values(ascending=False).index[:self.threshold].values
-            return (X.loc[:, mask], y) if y is None else X.loc[:, mask]
+            return (X.loc[:, mask], y) if y is not None else X.loc[:, mask]
 
     def fit_transform(self, X, y=None, **fit_params):
         self.fit(X, y)
@@ -288,6 +288,17 @@ class DcorSelector(BaseEstimator, TransformerMixin):
         dcor = np.sqrt(dcov2_xy) / np.sqrt(np.sqrt(dcov2_xx) * np.sqrt(dcov2_yy))
         return dcor
 
+    def distcorr_broad(self, x, y):
+        import numpy as np
+        x, y = np.atleast_2d(x), np.atleast_2d(y)
+        assert len(x.shape) == 2 and len(y.shape) == 2, 'x and y must be 2d array'
+        assert x.shape[1] == y.shape[1], 'x and y must have same dim at 1'
+        import numpy as np
+        dcor_matrix = [[self.distcorr(x[i, :], y[j, :]) for j in range(y.shape[0])]
+                       for i in range(x.shape[0])]
+        return np.array(dcor_matrix)
+
+
     def fit(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
         y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
@@ -312,10 +323,10 @@ class DcorSelector(BaseEstimator, TransformerMixin):
             raise ValueError('score is None, please fit first')
         if 0 <= self.threshold <= 1:
             mask = self.score.loc[self.score > self.threshold].index.tolist()
-            return (X.loc[:, mask], y) if y is None else X.loc[:, mask]
+            return (X.loc[:, mask], y) if y is not None else X.loc[:, mask]
         elif self.threshold in range(1, X.shape[1] + 1):
             mask = self.score.sort_values(ascending=False).index[:self.threshold].values
-            return (X.loc[:, mask], y) if y is None else X.loc[:, mask]
+            return (X.loc[:, mask], y) if y is not None else X.loc[:, mask]
 
     def fit_transform(self, X, y=None, **fit_params):
         self.fit(X, y)
@@ -382,4 +393,125 @@ class ColumnSelector(BaseEstimator, TransformerMixin):
 
     def clear(self):
         self.__is_fitted = False
+        gc.collect()
+
+
+class IVSelector(BaseEstimator, TransformerMixin):
+    def __init__(self, threshold=0.02):
+        self.threshold = threshold
+
+    def calculate_iv(self, x, y, type='category'):
+        assert type in ['category', 'continuous'], 'type must be category or continuous'
+        if type == 'continuous':
+            cluster = HDBSCAN(min_cluster_size=5,
+                              min_samples=None,
+                              metric='euclidean',
+                              cluster_selection_method='leaf')
+            cluster.fit(x.reshape(-1, 1))
+            x = cluster.labels_
+        x, y = x.ravel(), y.ravel()
+
+        # 计算每个分箱或分类中的正例和负例数量
+        df = pd.DataFrame({'x': x, 'y': y})
+        grouped = df.groupby('x')['y'].agg(['count', 'sum'])
+        grouped.columns = ['total', 'bad']
+        grouped['good'] = grouped['total'] - grouped['bad']
+
+        # 计算正例和负例的总数
+        total_bad = grouped['bad'].sum()
+        total_good = grouped['good'].sum()
+
+        # 计算正例和负例的比率
+        grouped['bad_rate'] = grouped['bad'] / total_bad
+        grouped['good_rate'] = grouped['good'] / total_good
+
+        # 避免除以0和对0取对数
+        grouped['bad_rate'] = grouped['bad_rate'].replace(0, 0.00001)
+        grouped['good_rate'] = grouped['good_rate'].replace(0, 0.00001)
+
+        # 计算 IV
+        grouped['iv'] = (grouped['bad_rate'] - grouped['good_rate']) * np.log(
+            grouped['bad_rate'] / grouped['good_rate'])
+        iv = grouped['iv'].sum()
+
+        return iv
+
+    def fit(self, X, y=None):
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+        y_unique = y.nunique().iloc[0]
+        if y_unique != 2:
+            raise ValueError('y must be binary')
+        X_cols = X.columns.tolist()
+        if len(X_cols) == 0:
+            return self
+        self.score = pd.Series(index=X_cols, name='IV score')
+        try:
+            for cols in X_cols:
+                self.score[cols] = self.calculate_iv(X[cols].values, y.values.ravel())
+        except Exception as e:
+            self.score = None
+            raise e
+        return self
+
+    def transform(self, X, y=None):
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        X_cols = X.columns.tolist()
+        if len(X_cols) == 0:
+            return X if y is None else (X, y)
+        if self.score is None:
+            raise ValueError('score is None, please fit first')
+        if isinstance(self.threshold, float):
+            mask = self.score.loc[self.score > self.threshold].index.tolist()
+            return (X.loc[:, mask], y) if y is not None else X.loc[:, mask]
+        elif self.threshold in range(1, X.shape[1] + 1):
+            mask = self.score.sort_values(ascending=False).index[:self.threshold].values
+            return (X.loc[:, mask], y) if y is not None else X.loc[:, mask]
+        else:
+            raise ValueError('threshold must be integer in range(1, X.shape[1] + 1) or float between 0-1')
+
+    def fit_transform(self, X, y=None, **fit_params):
+        self.fit(X, y)
+        return self.transform(X, y)
+
+    def clear(self):
+        self.score = None
+        gc.collect()
+
+
+class Chi2Selector(BaseEstimator, TransformerMixin):
+    def __init__(self, threshold=0.05):
+        self.threshold = threshold
+
+    def fit(self, X, y=None):
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+        X_cols = X.columns.tolist()
+        if len(X_cols) == 0:
+            return self
+        self.score = pd.DataFrame(index=X_cols, columns=['chi2', 'pvalue'])
+        try:
+            for cols in X_cols:
+                self.score.loc[cols] = fs.chi2(X[cols].values.reshape(-1, 1), y.values.reshape(-1, 1))
+        except Exception as e:
+            self.score = None
+            raise e
+        return self
+
+    def transform(self, X, y=None):
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        X_cols = X.columns.tolist()
+        if len(X_cols) == 0:
+            return X if y is None else (X, y)
+        if self.score is None:
+            raise ValueError('score is None, please fit first')
+        mask = self.score.loc[self.score.pvalue < self.threshold].index.tolist()
+        return (X.loc[:, mask], y) if y is not None else X.loc[:, mask]
+
+    def fit_transform(self, X, y=None, **fit_params):
+        self.fit(X, y)
+        return self.transform(X, y)
+
+    def clear(self):
+        self.score = None
         gc.collect()

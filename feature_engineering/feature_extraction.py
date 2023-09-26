@@ -5,6 +5,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 import copy
 import sklearn.manifold as smd
+import umap
 
 class FeatureBoostingGenerator(BaseEstimator, TransformerMixin):
     def __init__(self,
@@ -30,11 +31,11 @@ class FeatureBoostingGenerator(BaseEstimator, TransformerMixin):
             import multiprocessing
             self.n_jobs = multiprocessing.cpu_count()
         self.new_features = None
-        self.num_features = [numerical_features] if (not isinstance(numerical_features, list)) and (
+        self.numerical_features = [numerical_features] if (not isinstance(numerical_features, list)) and (
                     numerical_features is not None) else numerical_features
-        self.cat_features = [categorical_features] if (not isinstance(categorical_features, list)) and (
+        self.categorical_features = [categorical_features] if (not isinstance(categorical_features, list)) and (
                     categorical_features is not None) else categorical_features
-        self.ord_features = [ordinal_features] if (not isinstance(ordinal_features, list)) and (
+        self.ordinal_features = [ordinal_features] if (not isinstance(ordinal_features, list)) and (
                     ordinal_features is not None) else ordinal_features
         self.verbose = verbose
         self.feature_boosting = feature_boosting
@@ -44,16 +45,16 @@ class FeatureBoostingGenerator(BaseEstimator, TransformerMixin):
         self.min_candidate_features = min_candidate_features
 
     def fit(self, X, y):
-        self.candidate_features = openfe.get_candidate_features(numerical_features=self.num_features,
-                                                                categorical_features=self.cat_features,
-                                                                ordinal_features=self.ord_features)
+        self.candidate_features = openfe.get_candidate_features(numerical_features=self.numerical_features,
+                                                                categorical_features=self.categorical_features,
+                                                                ordinal_features=self.ordinal_features)
         X_cols = X.columns.tolist()
         if len(X_cols) == 0:
             return self
         target_cols = []
-        target_cols = target_cols + self.num_features if self.num_features is not None else target_cols
-        target_cols = target_cols + self.cat_features if self.cat_features is not None else target_cols
-        target_cols = target_cols + self.ord_features if self.ord_features is not None else target_cols
+        target_cols = target_cols + self.numerical_features if self.numerical_features is not None else target_cols
+        target_cols = target_cols + self.categorical_features if self.categorical_features is not None else target_cols
+        target_cols = target_cols + self.ordinal_features if self.ordinal_features is not None else target_cols
         assert set(target_cols) <= set(X_cols), 'target_cols must be subset of X.columns'
         self.new_features = self._generator.fit(data=X,
                                                 label=y,
@@ -71,7 +72,7 @@ class FeatureBoostingGenerator(BaseEstimator, TransformerMixin):
 
     def transform(self, X, y=None):
         X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
-        y = y.to_frame() if isinstance(y, pd.Series) else y.copy()
+        y = y.to_frame() if isinstance(y, pd.Series) else (y.copy() if y is not None else None)
         X_cols = X.columns.tolist()
         if len(X_cols) == 0:
             return X if y is None else (X, y)
@@ -95,9 +96,9 @@ class FeatureBoostingGenerator(BaseEstimator, TransformerMixin):
 
     def clear(self):
         self.new_features = None
-        self.num_features = None
-        self.cat_features = None
-        self.ord_features = None
+        self.numerical_features = None
+        self.categorical_features = None
+        self.ordinal_features = None
         self.candidate_features = None
         gc.collect()
 
@@ -535,3 +536,108 @@ class PCAGenerator(BaseEstimator, TransformerMixin):
     @n_jobs.setter
     def n_jobs(self, n_jobs):
         self.__estimator.n_jobs = n_jobs
+
+
+class Umap(BaseEstimator, TransformerMixin):
+
+    def __init__(self, n_neighbors=15, min_dist=0.1, n_components=2, metric='euclidean', random_state=1):
+        assert n_components in [2, 3], 'n_components must be 2 or 3'
+        self.groud_truth = None
+        self.__model = umap.UMAP(n_neighbors=n_neighbors,
+                                 min_dist=min_dist,
+                                 n_components=n_components,
+                                 metric=metric,
+                                 random_state=random_state)
+
+    @property
+    def n_neighbors(self):
+        return self.__model.n_neighbors
+
+    @n_neighbors.setter
+    def n_neighbors(self, n_neighbors):
+        self.__model.n_neighbors = n_neighbors
+
+    @property
+    def min_dist(self):
+        return self.__model.min_dist
+
+    @min_dist.setter
+    def min_dist(self, min_dist):
+        self.__model.min_dist = min_dist
+
+    @property
+    def n_components(self):
+        return self.__model.n_components
+
+    @n_components.setter
+    def n_components(self, n_components):
+        assert n_components in [2, 3], 'n_components must be 2 or 3'
+        self.__model.n_components = n_components
+
+    @property
+    def metric(self):
+        return self.__model.metric
+
+    @metric.setter
+    def metric(self, metric):
+        self.__model.metric = metric
+
+    @property
+    def random_state(self):
+        return self.__model.random_state
+
+    @random_state.setter
+    def random_state(self, random_state):
+        self.__model.random_state = random_state
+
+    def fit(self, X, y=None):
+        self.groud_truth = None
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        self.__model.fit(X)
+        if y is not None:
+            y = y.values if isinstance(y, pd.Series | pd.DataFrame) else y
+            self.groud_truth = y.ravel()
+        return self
+
+    def transform(self, X, y=None):
+        X = X.to_frame() if isinstance(X, pd.Series) else X.copy()
+        X = self.__model.transform(X)
+        X = pd.DataFrame(X, columns=['umap_' + str(i + 1) for i in range(X.shape[1])])
+        return X if y is None else (X, y)
+
+    def fit_transform(self, X, y=None, **fit_params):
+        self.fit(X, y)
+        return self.transform(X, y)
+
+    def clear(self):
+        gc.collect()
+
+    def plot(self, ax=None):
+        import matplotlib.pyplot as plt
+        if ax is None:
+            plt.figure(figsize=(10, 10))
+            if self.n_components == 2:
+                plt.scatter(self.__model.embedding_[:, 0],
+                            self.__model.embedding_[:, 1],
+                            c=self.groud_truth,
+                            s=10)
+            else:
+                # from mpl_toolkits.mplot3d import Axes3D
+                ax = plt.subplot(111, projection='3d')
+                ax.scatter(self.__model.embedding_[:, 0],
+                           self.__model.embedding_[:, 1],
+                           self.__model.embedding_[:, 2],
+                           c=self.groud_truth,
+                           s=10)
+        else:
+            if self.n_components == 2:
+                ax.scatter(self.__model.embedding_[:, 0],
+                           self.__model.embedding_[:, 1],
+                           c=self.groud_truth,
+                           s=10)
+            else:
+                ax.scatter(self.__model.embedding_[:, 0],
+                           self.__model.embedding_[:, 1],
+                           self.__model.embedding_[:, 2],
+                           c=self.groud_truth,
+                           s=10)

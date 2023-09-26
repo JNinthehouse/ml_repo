@@ -4,10 +4,8 @@ import sklearn.metrics as ms
 
 def get_score(y_true, y_pred, y_proba=None, type='classification'):
     # type : 'classification', 'regression'
-    y_true = y_true.values if isinstance(y_true, pd.DataFrame | pd.Series) else y_true
-    y_pred = y_pred.values if isinstance(y_pred, pd.DataFrame | pd.Series) else y_pred
-    y_true = y_true.ravel() if isinstance(y_true, np.ndarray) else y_true
-    y_pred = y_pred.ravel() if isinstance(y_pred, np.ndarray) else y_pred
+    y_true = np.asarray(y_true).ravel()
+    y_pred = np.asarray(y_pred).ravel()
     if type == 'classification':
         n_class = len(set(y_true))
         results = {
@@ -20,7 +18,7 @@ def get_score(y_true, y_pred, y_proba=None, type='classification'):
             'classification_report': ms.classification_report(y_true, y_pred)
         }
         if y_proba is not None:
-            y_proba = y_proba.values if isinstance(y_proba, pd.DataFrame | pd.Series) else y_proba
+            y_proba = np.asarray(y_proba).reshape(-1, n_class)
             results['roc_auc'] = ms.roc_auc_score(y_true, y_proba, average='macro' if n_class > 2 else 'binary')
     elif type == 'regression':
         results = {
